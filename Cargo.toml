@@ -16,3 +16,4 @@ edition = "2018"
 travis-ci = { repository = "nbari/backup", branch = "master" }
 
 [dependencies]
+clap = "2.33.0"
