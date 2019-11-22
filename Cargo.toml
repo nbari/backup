@@ -1,6 +1,6 @@
 [package]
 name = "backup"
-version = "0.0.1"
+version = "0.0.2"
 authors = ["Nicolas Embriz <nbari@tequila.io>"]
 description = "backup command line tool"
 documentation = "https://github.com/nbari/backup"
