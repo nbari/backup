@@ -1,6 +1,6 @@
 [package]
 name = "backup"
-version = "0.0.2"
+version = "0.0.3"
 authors = ["Nicolas Embriz <nbari@tequila.io>"]
 description = "backup command line tool"
 documentation = "https://github.com/nbari/backup"
@@ -12,8 +12,5 @@ categories = ["command-line-interface", "command-line-utilities"]
 license = "BSD-3-Clause"
 edition = "2018"
 
-[badges]
-travis-ci = { repository = "nbari/backup", branch = "master" }
-
 [dependencies]
-clap = "2.33.0"
+clap = "4"
