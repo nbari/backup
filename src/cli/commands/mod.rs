@@ -1,13 +1,15 @@
+pub mod edit;
 pub mod new;
 
 use clap::{
     builder::styling::{AnsiColor, Effects, Styles},
-    ColorChoice, Command,
+    Arg, ColorChoice, Command,
 };
+use std::{env, path::Path};
 
-use std::env;
+pub fn new(config_path: &Path) -> Command {
+    let config_file_path = config_path.join("config.yml");
 
-pub fn new() -> Command {
     let styles = Styles::styled()
         .header(AnsiColor::Yellow.on_default() | Effects::BOLD)
         .usage(AnsiColor::Green.on_default() | Effects::BOLD)
@@ -20,7 +22,15 @@ pub fn new() -> Command {
         .version(env!("CARGO_PKG_VERSION"))
         .color(ColorChoice::Auto)
         .styles(styles)
+        .arg(
+            Arg::new("config")
+                .short('c')
+                .long("config")
+                .help("Path to the configuration files")
+                .default_value(config_file_path.into_os_string()),
+        )
         .subcommand(new::command())
+        .subcommand(edit::command())
 }
 
 #[cfg(test)]
@@ -29,7 +39,7 @@ mod tests {
 
     #[test]
     fn test_new() {
-        let command = new();
+        let command = new(Path::new("."));
 
         assert_eq!(command.get_name(), "backup");
         assert_eq!(
