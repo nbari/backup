@@ -1,6 +1,5 @@
 use anyhow::Result;
 use backup::cli::{actions, actions::Action, start};
-use std::process;
 
 // Main function
 fn main() -> Result<()> {
@@ -10,7 +9,6 @@ fn main() -> Result<()> {
     // Handle the action
     match action {
         Action::New { .. } => actions::new::handle(action)?,
-        _ => todo!(),
     }
 
     Ok(())

@@ -1,5 +1,5 @@
 use crate::cli::actions::Action;
-use anyhow::{Context, Result};
+use anyhow::Result;
 use clap::ArgMatches;
 use std::path::PathBuf;
 

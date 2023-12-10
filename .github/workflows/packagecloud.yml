@@ -64,53 +64,53 @@ jobs:
       - name: push Debian
         run: |-
           for distro in squeeze wheezy jessie stretch buster bullseye bookworm; do
-            package_cloud push nbari/backup/debian/$distro dist/*.deb --skip-errors
+            package_cloud push nbari/backup-sh/debian/$distro dist/*.deb --skip-errors
           done
 
       - name: push Ubuntu
         run: |-
           for distro in bionic focal jammy; do
-            package_cloud push nbari/backup/ubuntu/$distro dist/*.deb --skip-errors
+            package_cloud push nbari/backup-sh/ubuntu/$distro dist/*.deb --skip-errors
           done
 
       - name: push Raspbian
         run: |-
           for distro in stretch buster bullseye; do
-            package_cloud push nbari/backup/raspbian/$distro dist/*.deb --skip-errors
+            package_cloud push nbari/backup-sh/raspbian/$distro dist/*.deb --skip-errors
           done
 
       - name: push Elementaryos
         run: |-
           for distro in odin jolnir horus; do
-            package_cloud push nbari/backup/elementaryos/$distro dist/*.deb --skip-errors
+            package_cloud push nbari/backup-sh/elementaryos/$distro dist/*.deb --skip-errors
           done
 
       - name: push Linuxmint
         run: |-
           for distro in vanessa vera victoria; do
-            package_cloud push nbari/backup/linuxmint/$distro dist/*.deb --skip-errors
+            package_cloud push nbari/backup-sh/linuxmint/$distro dist/*.deb --skip-errors
           done
 
       - name: push Enterprise Linux
         run: |-
           for distro in 7 8 9; do
-            package_cloud push nbari/backup/el/$distro dist/*.rpm --skip-errors
+            package_cloud push nbari/backup-sh/el/$distro dist/*.rpm --skip-errors
           done
 
       - name: push Fedora
         run: |-
           for distro in 38 39 40; do
-            package_cloud push nbari/backup/fedora/$distro dist/*.rpm --skip-errors
+            package_cloud push nbari/backup-sh/fedora/$distro dist/*.rpm --skip-errors
           done
 
       - name: push Opensuse
         run: |-
           for distro in 15.4 15.5 15.6; do
-            package_cloud push nbari/backup/opensuse/$distro dist/*.rpm --skip-errors
+            package_cloud push nbari/backup-sh/opensuse/$distro dist/*.rpm --skip-errors
           done
 
       - name: push Poky
         run: |-
           for distro in mickledore nanbield; do
-            package_cloud push nbari/backup/poky/$distro dist/*.rpm --skip-errors
+            package_cloud push nbari/backup-sh/poky/$distro dist/*.rpm --skip-errors
           done

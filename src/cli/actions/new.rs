@@ -6,14 +6,12 @@ pub fn handle(action: Action) -> Result<()> {
     match action {
         Action::New {
             name,
-            directory,
-            file,
-            exclude,
+            directory: _,
+            file: _,
+            exclude: _,
         } => {
             println!("Creating new project: {}", name);
         }
-
-        _ => unreachable!(),
     }
 
     Ok(())
