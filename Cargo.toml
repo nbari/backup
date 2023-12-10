@@ -2,7 +2,7 @@
 name = "backup"
 version = "0.0.3"
 authors = ["Nicolas Embriz <nbari@tequila.io>"]
-description = "backup command line tool"
+description = "create encrypted backups"
 documentation = "https://github.com/nbari/backup"
 homepage = "https://github.com/nbari/backup"
 repository = "https://github.com/nbari/backup"
@@ -13,4 +13,6 @@ license = "BSD-3-Clause"
 edition = "2018"
 
 [dependencies]
+anyhow = "1"
 clap = "4"
+openssl = { version = "0.10", features = ["vendored"] }
