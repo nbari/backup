@@ -5,11 +5,9 @@ use clap::{
     builder::styling::{AnsiColor, Effects, Styles},
     Arg, ColorChoice, Command,
 };
-use std::{env, path::Path};
+use std::{env, path::PathBuf};
 
-pub fn new(config_path: &Path) -> Command {
-    let config_file_path = config_path.join("config.yml");
-
+pub fn new(config_path: PathBuf) -> Command {
     let styles = Styles::styled()
         .header(AnsiColor::Yellow.on_default() | Effects::BOLD)
         .usage(AnsiColor::Green.on_default() | Effects::BOLD)
@@ -27,7 +25,7 @@ pub fn new(config_path: &Path) -> Command {
                 .short('c')
                 .long("config")
                 .help("Path to the configuration files")
-                .default_value(config_file_path.into_os_string()),
+                .default_value(config_path.into_os_string()),
         )
         .subcommand(new::command())
         .subcommand(edit::command())

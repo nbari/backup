@@ -5,7 +5,7 @@ use std::{fs, path::PathBuf};
 pub fn get_config_path() -> Result<PathBuf> {
     let home_dir = dirs::home_dir().map_or_else(|| PathBuf::from("/tmp"), |path| path);
 
-    let config_path = home_dir.join(".config").join("backup");
+    let config_path = home_dir.join(".backup");
     fs::create_dir_all(&config_path).context(format!(
         "failed to create config directory {}",
         &config_path.display()
@@ -18,7 +18,7 @@ pub fn get_config_path() -> Result<PathBuf> {
 pub fn start() -> Result<Action> {
     let config_path = get_config_path()?;
 
-    let matches = commands::new(&config_path).get_matches();
+    let matches = commands::new(config_path).get_matches();
 
     let action = handler(&matches)?;
     Ok(action)
