@@ -9,5 +9,6 @@ pub enum Action {
         directory: Option<Vec<PathBuf>>,
         file: Option<Vec<PathBuf>>,
         exclude: Option<Vec<String>>,
+        config: PathBuf,
     },
 }

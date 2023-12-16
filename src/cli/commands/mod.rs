@@ -25,7 +25,8 @@ pub fn new(config_path: PathBuf) -> Command {
                 .short('c')
                 .long("config")
                 .help("Path to the configuration files")
-                .default_value(config_path.into_os_string()),
+                .default_value(config_path.into_os_string())
+                .global(true),
         )
         .subcommand(new::command())
         .subcommand(edit::command())
@@ -34,10 +35,11 @@ pub fn new(config_path: PathBuf) -> Command {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     #[test]
     fn test_new() {
-        let command = new(Path::new("."));
+        let command = new(PathBuf::from("."));
 
         assert_eq!(command.get_name(), "backup");
         assert_eq!(
