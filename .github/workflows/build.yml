@@ -28,20 +28,17 @@ jobs:
 
     strategy:
       matrix:
-        os:
-          - ubuntu-latest
-          - macos-latest
-          - windows-latest
-        target:
-          - x86_64-unknown-linux-musl
-          - x86_64-apple-darwin
-          - x86_64-pc-windows-msvc
         include:
-          - os: ubuntu-latest
+          - build: linux
+            os: ubuntu-latest
             target: x86_64-unknown-linux-musl
-          - os: macos-latest
+
+          - build: macos
+            os: macos-latest
             target: x86_64-apple-darwin
-          - os: windows-latest
+
+          - build: windows
+            os: windows-latest
             target: x86_64-pc-windows-msvc
 
     steps:
