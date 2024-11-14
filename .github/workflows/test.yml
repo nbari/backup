@@ -58,8 +58,6 @@ jobs:
           - ubuntu-latest
           - macOS-latest
           - windows-latest
-        rust:
-          - stable
 
     needs:
       - format
@@ -72,8 +70,6 @@ jobs:
 
       - name: Set up Rust toolchain
         uses: dtolnay/rust-toolchain@stable
-        with:
-          profile: ${{ matrix.rust }}
 
       - name: Run tests
-        run: cargo test
+        run: cargo test -- --nocapture
