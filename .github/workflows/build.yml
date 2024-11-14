@@ -49,7 +49,6 @@ jobs:
         run: echo "${GITHUB_REF##*/}"
 
       - name: Get the release version from the tag
-        if: startsWith(github.ref, 'refs/tags/')
         run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_ENV
 
       - name: Install Rust
@@ -59,21 +58,21 @@ jobs:
 
       - name: Install Linux Dependencies
         run: sudo apt -y install musl-dev musl-tools
-        if: matrix.os == 'ubuntu-latest'
+        if: matrix.build == 'linux'
 
       - name: Install Windows Dependencies
         run: |
           choco install openssl
-        if: matrix.os == 'windows-latest'
+        if: matrix.build == 'windows'
 
       - name: Set OpenSSL Directory on Windows
         run: |
-          echo 'OPENSSL_DIR=C:\Program Files\OpenSSL-Win64' >> $GITHUB_ENV
-        if: matrix.os == 'windows-latest'
+          echo 'OPENSSL_DIR=C:\Program Files\OpenSSL-Win64' | Out-File -FilePath $env:GITHUB_ENV -Append
+        if: matrix.build == 'windows'
 
       - name: Build Project
         run: |-
-          if [ "${{ matrix.os }}" == "ubuntu-latest" ]; then
+          if [ "${{ matrix.build }}" == "linux" ]; then
             cargo build --release --locked --target ${{ matrix.target }} --features "openssl/vendored"
           else
             cargo build --release --locked --target ${{ matrix.target }}
