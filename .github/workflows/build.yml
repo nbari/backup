@@ -70,10 +70,6 @@ jobs:
           echo 'OPENSSL_DIR=C:\Program Files\OpenSSL-Win64' | Out-File -FilePath $env:GITHUB_ENV -Append
         if: matrix.build == 'windows'
 
-      - name: Build Project
+      - name: Build
         run: |-
-          if [ "${{ matrix.build }}" == "linux" ]; then
-            cargo build --release --locked --target ${{ matrix.target }} --features "openssl/vendored"
-          else
-            cargo build --release --locked --target ${{ matrix.target }}
-          fi
+          cargo build --release --locked --target ${{ matrix.target }} ${{ matrix.build == 'linux' && '--features "openssl/vendored"' || '' }}
