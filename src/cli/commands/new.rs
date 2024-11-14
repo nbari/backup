@@ -1,6 +1,17 @@
 use clap::{builder::ValueParser, Arg, ArgAction, Command};
 use std::{fs, path::PathBuf};
 
+// alpahnumeric validator
+pub fn validator_is_alphanumeric() -> ValueParser {
+    ValueParser::from(move |s: &str| -> std::result::Result<String, String> {
+        if s.chars().all(|c| c.is_ascii_alphanumeric()) {
+            return Ok(s.to_string());
+        }
+
+        Err("Only [a-Z0-9] alphanumeric characters are allowed".to_string())
+    })
+}
+
 pub fn validator_is_file() -> ValueParser {
     ValueParser::from(move |s: &str| -> std::result::Result<PathBuf, String> {
         if let Ok(metadata) = fs::metadata(s) {
@@ -32,8 +43,9 @@ pub fn command() -> Command {
         .about("Create a new backup configuration")
         .arg(
             Arg::new("name")
-                .help("Name of the backup configuration")
-                .required(true),
+                .help("Name of the backup")
+                .required(true)
+                .value_parser(validator_is_alphanumeric()),
         )
         .arg(
             Arg::new("directory")
