@@ -9,6 +9,12 @@ pub fn dispatch(matches: &ArgMatches) -> Result<Action> {
             .get_one("name")
             .map(|s: &String| s.to_string())
             .ok_or_else(|| anyhow::anyhow!("Name required"))?,
+
+        config: matches
+            .get_one::<String>("config")
+            .map(PathBuf::from)
+            .ok_or_else(|| anyhow::anyhow!("Config required"))?,
+
         directory: Some(
             matches
                 .get_many::<PathBuf>("directory")
@@ -16,6 +22,7 @@ pub fn dispatch(matches: &ArgMatches) -> Result<Action> {
                 .map(|v| v.to_path_buf())
                 .collect::<Vec<_>>(),
         ),
+
         file: Some(
             matches
                 .get_many::<PathBuf>("file")
@@ -23,6 +30,7 @@ pub fn dispatch(matches: &ArgMatches) -> Result<Action> {
                 .map(|v| v.to_path_buf())
                 .collect::<Vec<_>>(),
         ),
+
         exclude: Some(
             matches
                 .get_many::<String>("exclude")
