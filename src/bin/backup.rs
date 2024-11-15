@@ -10,6 +10,7 @@ fn main() -> Result<()> {
     match action {
         Action::New { .. } => actions::new::handle(action)?,
         Action::Show => actions::show::handle(action, globals)?,
+        Action::Run { .. } => actions::run::handle(action)?,
     }
 
     Ok(())

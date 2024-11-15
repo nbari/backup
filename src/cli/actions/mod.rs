@@ -1,4 +1,5 @@
 pub mod new;
+pub mod run;
 pub mod show;
 
 use std::path::PathBuf;
@@ -13,4 +14,7 @@ pub enum Action {
         config: PathBuf,
     },
     Show,
+    Run {
+        name: String,
+    },
 }
