@@ -1,4 +1,5 @@
 pub mod new;
+pub mod show;
 
 use std::path::PathBuf;
 
@@ -11,4 +12,5 @@ pub enum Action {
         exclude: Option<Vec<String>>,
         config: PathBuf,
     },
+    Show,
 }

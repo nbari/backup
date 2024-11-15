@@ -1,5 +1,6 @@
 pub mod edit;
 pub mod new;
+pub mod show;
 
 use clap::{
     builder::styling::{AnsiColor, Effects, Styles},
@@ -30,6 +31,7 @@ pub fn new(config_path: PathBuf) -> Command {
         )
         .subcommand(new::command())
         .subcommand(edit::command())
+        .subcommand(show::command())
 }
 
 #[cfg(test)]

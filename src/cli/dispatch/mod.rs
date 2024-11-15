@@ -1,4 +1,5 @@
-pub mod new;
+pub mod cmd_new;
+pub mod cmd_show;
 
 use crate::cli::actions::Action;
 use anyhow::{Context, Result};
@@ -12,7 +13,8 @@ pub fn handler(matches: &clap::ArgMatches) -> Result<Action> {
     };
 
     match matches.subcommand_name() {
-        Some("new") => new::dispatch(sub_m("new")?),
+        Some("new") => cmd_new::dispatch(sub_m("new")?),
+        Some("show") => cmd_show::dispatch(),
 
         _ => todo!(),
     }

@@ -14,8 +14,11 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1"
+chrono = "0.4"
 clap = { version = "4", features = ["string", "env"] }
 config = { version = "0.14", default-features = false, features = ["yaml"] }
 dirs = "5"
 openssl = { version = "0.10", optional = true, features = ["vendored"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
+tempfile = "3.14"
+walkdir = "2.5"
