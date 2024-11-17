@@ -1,5 +1,5 @@
 test: clippy
-  cargo test
+  cargo test -- --nocapture
 
 clippy:
   cargo clippy --all -- -W clippy::all -W clippy::nursery -D warnings
