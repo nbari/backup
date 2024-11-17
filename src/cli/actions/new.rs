@@ -111,15 +111,18 @@ fn get_unique_dir_parents(mut dirs: Vec<PathBuf>) -> Vec<PathBuf> {
 }
 
 fn parse_gitignore_pattern(pattern: &str) -> (String, String) {
-    if pattern.starts_with('!') {
-        ("negation".to_string(), pattern[1..].to_string()) // Remove `!` and classify as negation
-    } else if pattern.contains("**") {
-        ("recursive".to_string(), pattern.to_string()) // Recursive patterns
-    } else if pattern.contains('*') {
-        ("wildcard".to_string(), pattern.to_string()) // Wildcard patterns
-    } else {
-        ("path".to_string(), pattern.to_string()) // Literal path
-    }
+    pattern.strip_prefix('!').map_or_else(
+        || {
+            if pattern.contains("**") {
+                ("recursive".to_string(), pattern.to_string()) // Recursive patterns
+            } else if pattern.contains('*') {
+                ("wildcard".to_string(), pattern.to_string()) // Wildcard patterns
+            } else {
+                ("path".to_string(), pattern.to_string()) // Literal path
+            }
+        },
+        |p| ("negation".to_string(), p.to_string()), // Remove `!` and classify as negation
+    )
 }
 
 fn create_db_config_direcories_table(db_path: &PathBuf, dirs: Vec<PathBuf>) -> Result<()> {
