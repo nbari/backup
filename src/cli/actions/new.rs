@@ -27,11 +27,9 @@ pub fn handle(action: Action) -> Result<()> {
         // exclude files if they are within the directories that are being backed up
         create_db_config_files_table(&db_path, file.unwrap_or_default())?;
 
-        if let Some(exclude) = exclude {
-            for exclude in exclude {
-                println!("Exclude: {}", exclude);
-            }
-        }
+        // create the config_exclusions table
+        let exclusions = exclude.unwrap_or_default();
+        create_db_config_exclusions_table(&db_path, exclusions)?;
     }
 
     Ok(())
@@ -112,6 +110,18 @@ fn get_unique_dir_parents(mut dirs: Vec<PathBuf>) -> Vec<PathBuf> {
     result
 }
 
+fn parse_gitignore_pattern(pattern: &str) -> (String, String) {
+    if pattern.starts_with('!') {
+        ("negation".to_string(), pattern[1..].to_string()) // Remove `!` and classify as negation
+    } else if pattern.contains("**") {
+        ("recursive".to_string(), pattern.to_string()) // Recursive patterns
+    } else if pattern.contains('*') {
+        ("wildcard".to_string(), pattern.to_string()) // Wildcard patterns
+    } else {
+        ("path".to_string(), pattern.to_string()) // Literal path
+    }
+}
+
 fn create_db_config_direcories_table(db_path: &PathBuf, dirs: Vec<PathBuf>) -> Result<()> {
     let conn = Connection::open(db_path)?;
 
@@ -171,6 +181,32 @@ fn create_db_config_files_table(db_path: &PathBuf, files: Vec<PathBuf>) -> Resul
         if !is_child {
             stmt.execute(params![file_path])?;
         }
+    }
+
+    Ok(())
+}
+
+fn create_db_config_exclusions_table(db_path: &PathBuf, exclusions: Vec<String>) -> Result<()> {
+    let conn = Connection::open(db_path)?;
+
+    // Table to track each backup version
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS config_exclusions (
+    id INTEGER PRIMARY KEY,
+    pattern TEXT NOT NULL,      -- Raw pattern from the input
+    type TEXT NOT NULL,         -- 'path', 'wildcard', 'recursive', or 'negation'
+    UNIQUE(pattern)             -- Ensure no duplicate patterns
+)",
+        [],
+    )?;
+
+    // Prepare the insert statement
+    let mut stmt =
+        conn.prepare("INSERT OR IGNORE INTO config_exclusions (type, pattern) VALUES (?1, ?2)")?;
+
+    for pattern in exclusions {
+        let (pattern_type, processed_pattern) = parse_gitignore_pattern(&pattern);
+        stmt.execute(params![pattern_type, processed_pattern])?;
     }
 
     Ok(())
@@ -254,5 +290,44 @@ mod tests {
         assert_eq!(result.len(), 2);
         assert!(result.contains(&"/a/file3.txt".to_string()));
         assert!(result.contains(&"/z/file4.txt".to_string()));
+    }
+
+    #[test]
+    fn test_create_db_config_exclusions_table() {
+        let temp_dir = tempfile::tempdir().unwrap();
+
+        let db_path = temp_dir.path().join("test.db");
+
+        let exclusions = vec![
+            "/a/b/c".to_string(),
+            "!/a/b/d".to_string(),
+            "**/c".to_string(),
+            "*.txt".to_string(),
+        ];
+
+        create_db_tables(&db_path).unwrap();
+
+        create_db_config_exclusions_table(&db_path, exclusions).unwrap();
+
+        let conn = Connection::open(&db_path).unwrap();
+
+        let mut stmt = conn
+            .prepare("SELECT pattern, type FROM config_exclusions")
+            .unwrap();
+
+        let exclusions_iter = stmt
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .unwrap();
+
+        let result: Vec<(String, String)> =
+            exclusions_iter.filter_map(|result| result.ok()).collect();
+
+        assert_eq!(result.len(), 4);
+        assert!(result.contains(&("/a/b/c".to_string(), "path".to_string())));
+        assert!(result.contains(&("/a/b/d".to_string(), "negation".to_string())));
+        assert!(result.contains(&("**/c".to_string(), "recursive".to_string())));
+        assert!(result.contains(&("*.txt".to_string(), "wildcard".to_string())));
     }
 }
