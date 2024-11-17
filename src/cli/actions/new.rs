@@ -1,7 +1,7 @@
 use crate::cli::actions::Action;
 use anyhow::Result;
 use rusqlite::{params, Connection};
-use std::{fs, path::PathBuf};
+use std::path::{Path, PathBuf};
 
 /// Handle the create action
 pub fn handle(action: Action) -> Result<()> {
@@ -23,11 +23,9 @@ pub fn handle(action: Action) -> Result<()> {
         // create the config_directories table
         create_db_config_direcories_table(&db_path, backup_dirs)?;
 
-        if let Some(file) = file {
-            for file in file {
-                println!("File: {}", fs::canonicalize(file)?.display());
-            }
-        }
+        // create the config_files tables
+        // exclude files if they are within the directories that are being backed up
+        create_db_config_files_table(&db_path, file.unwrap_or_default())?;
 
         if let Some(exclude) = exclude {
             for exclude in exclude {
@@ -137,6 +135,47 @@ fn create_db_config_direcories_table(db_path: &PathBuf, dirs: Vec<PathBuf>) -> R
     Ok(())
 }
 
+fn create_db_config_files_table(db_path: &PathBuf, files: Vec<PathBuf>) -> Result<()> {
+    let conn = Connection::open(db_path)?;
+
+    // Table to track each backup version
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS config_files (
+    id INTEGER PRIMARY KEY,
+    path TEXT NOT NULL UNIQUE
+)",
+        [],
+    )?;
+
+    // Prepare the insert statement
+    let mut stmt = conn.prepare("INSERT OR IGNORE INTO config_files (path) VALUES (?1)")?;
+
+    // Get all directory paths from config_directories table
+    let mut dirs_stmt = conn.prepare("SELECT path FROM config_directories")?;
+    let dirs_iter = dirs_stmt.query_map([], |row| row.get::<_, String>(0))?;
+
+    // Collect all directory paths
+    let dirs: Vec<String> = dirs_iter.filter_map(|result| result.ok()).collect();
+
+    // Insert files only if they are not children of any of the directories
+    for file in files {
+        let file_path = file.to_string_lossy().to_string();
+
+        // Check if file is a child of any of the directories
+        let is_child = dirs.iter().any(|dir| {
+            let dir_path = Path::new(dir);
+            file.starts_with(dir_path)
+        });
+
+        // Only insert file if it is not a child of any directory
+        if !is_child {
+            stmt.execute(params![file_path])?;
+        }
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -159,5 +198,54 @@ mod tests {
         assert_eq!(result.len(), 2);
         assert_eq!(result[0], PathBuf::from("/a/b"));
         assert_eq!(result[1], PathBuf::from("/b"));
+    }
+
+    // test the create_config_directories_table function
+    #[test]
+    fn test_create_db_config_directoris_and_files_table() {
+        let db_path = PathBuf::from("test.db");
+        let dirs = vec![
+            PathBuf::from("/a/b/c"),
+            PathBuf::from("/a/b/d"),
+            PathBuf::from("/a/b/c/d"),
+            PathBuf::from("/a/b"),
+            PathBuf::from("/b"),
+            PathBuf::from("/b/c"),
+            PathBuf::from("/b/cc"),
+            PathBuf::from("/b/d"),
+        ];
+
+        create_db_tables(&db_path).unwrap();
+
+        let backup_dirs = get_unique_dir_parents(dirs);
+
+        create_db_config_direcories_table(&db_path, backup_dirs).unwrap();
+
+        let conn = Connection::open(&db_path).unwrap();
+        let mut stmt = conn.prepare("SELECT path FROM config_directories").unwrap();
+        let dirs_iter = stmt.query_map([], |row| row.get::<_, String>(0)).unwrap();
+
+        let result: Vec<String> = dirs_iter.filter_map(|result| result.ok()).collect();
+
+        assert_eq!(result.len(), 2);
+        assert!(result.contains(&"/a/b".to_string()));
+        assert!(result.contains(&"/b".to_string()));
+
+        let files = vec![
+            PathBuf::from("/a/b/c/file1.txt"),
+            PathBuf::from("/a/b/c/d/file2.txt"),
+            PathBuf::from("/a/file3.txt"),
+            PathBuf::from("/z/file4.txt"),
+        ];
+
+        create_db_config_files_table(&db_path, files).unwrap();
+        let mut stmt = conn.prepare("SELECT path FROM config_files").unwrap();
+
+        let files_iter = stmt.query_map([], |row| row.get::<_, String>(0)).unwrap();
+
+        let result: Vec<String> = files_iter.filter_map(|result| result.ok()).collect();
+        assert_eq!(result.len(), 2);
+        assert!(result.contains(&"/a/file3.txt".to_string()));
+        assert!(result.contains(&"/z/file4.txt".to_string()));
     }
 }
