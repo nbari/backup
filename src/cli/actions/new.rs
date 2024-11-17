@@ -203,7 +203,10 @@ mod tests {
     // test the create_config_directories_table function
     #[test]
     fn test_create_db_config_directoris_and_files_table() {
-        let db_path = PathBuf::from("test.db");
+        let temp_dir = tempfile::tempdir().unwrap();
+
+        let db_path = temp_dir.path().join("test.db");
+
         let dirs = vec![
             PathBuf::from("/a/b/c"),
             PathBuf::from("/a/b/d"),
@@ -222,7 +225,9 @@ mod tests {
         create_db_config_direcories_table(&db_path, backup_dirs).unwrap();
 
         let conn = Connection::open(&db_path).unwrap();
+
         let mut stmt = conn.prepare("SELECT path FROM config_directories").unwrap();
+
         let dirs_iter = stmt.query_map([], |row| row.get::<_, String>(0)).unwrap();
 
         let result: Vec<String> = dirs_iter.filter_map(|result| result.ok()).collect();
@@ -239,11 +244,13 @@ mod tests {
         ];
 
         create_db_config_files_table(&db_path, files).unwrap();
+
         let mut stmt = conn.prepare("SELECT path FROM config_files").unwrap();
 
         let files_iter = stmt.query_map([], |row| row.get::<_, String>(0)).unwrap();
 
         let result: Vec<String> = files_iter.filter_map(|result| result.ok()).collect();
+
         assert_eq!(result.len(), 2);
         assert!(result.contains(&"/a/file3.txt".to_string()));
         assert!(result.contains(&"/z/file4.txt".to_string()));
