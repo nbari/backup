@@ -1,5 +1,7 @@
-pub mod edit;
-pub mod new;
+pub mod cmd_edit;
+pub mod cmd_new;
+pub mod cmd_run;
+pub mod cmd_show;
 
 use clap::{
     builder::styling::{AnsiColor, Effects, Styles},
@@ -28,8 +30,10 @@ pub fn new(config_path: PathBuf) -> Command {
                 .default_value(config_path.into_os_string())
                 .global(true),
         )
-        .subcommand(new::command())
-        .subcommand(edit::command())
+        .subcommand(cmd_edit::command())
+        .subcommand(cmd_new::command())
+        .subcommand(cmd_run::command())
+        .subcommand(cmd_show::command())
 }
 
 #[cfg(test)]

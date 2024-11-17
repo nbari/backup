@@ -4,11 +4,15 @@ use std::{fs, path::PathBuf};
 // alpahnumeric validator
 pub fn validator_is_alphanumeric() -> ValueParser {
     ValueParser::from(move |s: &str| -> std::result::Result<String, String> {
-        if s.chars().all(|c| c.is_ascii_alphanumeric()) {
+        if s == "_" {
+            return Err("The name cannot be just an underscore".to_string());
+        }
+
+        if s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
             return Ok(s.to_string());
         }
 
-        Err("Only [a-Z0-9] alphanumeric characters are allowed".to_string())
+        Err("Only alphanumeric characters and underscore are allowed".to_string())
     })
 }
 
@@ -70,4 +74,38 @@ pub fn command() -> Command {
                 .long("exclude")
                 .help("Exclude a file or directory from the backup"),
         )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_validator_is_alphanumeric() {
+        let test_cases = vec![
+            ("backup", "test", true),
+            ("backup", "test123", true),
+            ("backup", "12345", true),
+            ("backup", "test!", false),
+            ("backup", "test 123", false),
+            ("backup", "test@test", false),
+            ("backup", "n~", false),
+            ("backup", "n", true),
+            ("backup", "_", false),
+            ("backup", "_A", true),
+            ("backup", "Z_", true),
+        ];
+
+        for (c, name, should_succeed) in test_cases {
+            let cmd = command();
+
+            let m = cmd.try_get_matches_from(vec![c, name]);
+
+            if should_succeed {
+                assert!(m.is_ok())
+            } else {
+                assert!(m.is_err());
+            }
+        }
+    }
 }
