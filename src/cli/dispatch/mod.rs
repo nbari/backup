@@ -5,18 +5,21 @@ pub mod cmd_show;
 use crate::cli::actions::Action;
 use anyhow::{Context, Result};
 
-pub fn handler(matches: &clap::ArgMatches) -> Result<Action> {
-    // Closure to return subcommand matches
-    let sub_m = |subcommand| -> Result<&clap::ArgMatches> {
-        matches
-            .subcommand_matches(subcommand)
-            .context("arguments not found")
-    };
+/// Helper function to get subcommand matches
+pub fn get_subcommand_matches<'a>(
+    matches: &'a clap::ArgMatches,
+    subcommand: &str,
+) -> Result<&'a clap::ArgMatches> {
+    matches
+        .subcommand_matches(subcommand)
+        .context("arguments not found")
+}
 
+pub fn handler(matches: &clap::ArgMatches) -> Result<Action> {
     match matches.subcommand_name() {
-        Some("new") => cmd_new::dispatch(sub_m("new")?),
+        Some("new") => cmd_new::dispatch(get_subcommand_matches(matches, "new")?),
         Some("show") => cmd_show::dispatch(),
-        Some("run") => cmd_run::dispatch(sub_m("run")?),
+        Some("run") => cmd_run::dispatch(get_subcommand_matches(matches, "run")?),
 
         _ => todo!(),
     }

@@ -67,13 +67,6 @@ pub fn command() -> Command {
                 .help("Add a file to the backup")
                 .value_parser(validator_is_file()),
         )
-        .arg(
-            Arg::new("exclude")
-                .action(ArgAction::Append)
-                .short('e')
-                .long("exclude")
-                .help("Exclude a file or directory from the backup"),
-        )
 }
 
 #[cfg(test)]

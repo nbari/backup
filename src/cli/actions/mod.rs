@@ -10,11 +10,14 @@ pub enum Action {
         name: String,
         directory: Option<Vec<PathBuf>>,
         file: Option<Vec<PathBuf>>,
-        exclude: Option<Vec<String>>,
         config: PathBuf,
     },
     Show,
     Run {
         name: String,
+        no_gitignore: bool,
+        no_compression: bool,
+        no_encryption: bool,
+        dry_run: bool,
     },
 }

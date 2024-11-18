@@ -30,13 +30,5 @@ pub fn dispatch(matches: &ArgMatches) -> Result<Action> {
                 .map(|v| v.to_path_buf())
                 .collect::<Vec<_>>(),
         ),
-
-        exclude: Some(
-            matches
-                .get_many::<String>("exclude")
-                .unwrap_or_default()
-                .map(String::from)
-                .collect::<Vec<_>>(),
-        ),
     })
 }

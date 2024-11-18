@@ -10,7 +10,6 @@ pub fn handle(action: Action) -> Result<()> {
         config,
         directory,
         file,
-        exclude,
     } = action
     {
         let db_path = config.join(format!("{}.db", name));
@@ -26,9 +25,6 @@ pub fn handle(action: Action) -> Result<()> {
         // create the config_files tables
         // exclude files if they are within the directories that are being backed up
         create_db_config_files_table(&db_path, file.unwrap_or_default())?;
-
-        // create the config_exclusions table
-        create_db_config_exclusions_table(&db_path, exclude.unwrap_or_default())?;
     }
 
     Ok(())
@@ -168,29 +164,6 @@ fn create_db_config_files_table(db_path: &PathBuf, files: Vec<PathBuf>) -> Resul
         if !is_child {
             stmt.execute(params![file_path])?;
         }
-    }
-
-    Ok(())
-}
-
-fn create_db_config_exclusions_table(db_path: &PathBuf, exclusions: Vec<String>) -> Result<()> {
-    let conn = Connection::open(db_path)?;
-
-    // Table to track each backup version
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS config_exclusions (
-    id INTEGER PRIMARY KEY,
-    pattern TEXT NOT NULL,      -- Raw pattern from the input
-    UNIQUE(pattern)             -- Ensure no duplicate patterns
-)",
-        [],
-    )?;
-
-    // Prepare the insert statement
-    let mut stmt = conn.prepare("INSERT OR IGNORE INTO config_exclusions (pattern) VALUES (?1)")?;
-
-    for pattern in exclusions {
-        stmt.execute(params![pattern])?;
     }
 
     Ok(())
