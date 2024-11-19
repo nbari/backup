@@ -18,7 +18,7 @@ pub fn new(config_path: PathBuf) -> Command {
 
     Command::new("backup")
         .about("Create compressed and encrypted backups")
-        .after_help("Create .gitignore file in the backup directory to exclude files")
+        .after_help("Note: To exclude specific files or directories from backups, create a `.gitignore` file in the backup directory and list the patterns of the files or directories to exclude.")
         .arg_required_else_help(true)
         .version(env!("CARGO_PKG_VERSION"))
         .color(ColorChoice::Auto)
