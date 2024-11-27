@@ -64,7 +64,13 @@ fn walk_directory(
     no_gitignore: bool,
 ) -> impl Iterator<Item = Result<PathBuf, ignore::Error>> {
     WalkBuilder::new(base_dir)
+        .follow_links(true)
+        .hidden(false)
+        .git_exclude(false)
+        .git_global(false)
         .git_ignore(!no_gitignore)
+        .require_git(false)
+        .parents(true)
         .build()
         .filter_map(|entry| match entry {
             Ok(e) if e.path().is_file() => Some(Ok(e.into_path())),
