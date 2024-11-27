@@ -18,6 +18,14 @@ pub fn handle(action: Action, globals: GlobalArgs) -> Result<()> {
 
         let db_file = home_dir.join(format!("{}.db", name));
 
+        // check if the database file exists
+        if !db_file.exists() {
+            return Err(anyhow!(
+                "No backup named \"{}\" found. Create a new backup first.",
+                name
+            ));
+        }
+
         let directories = get_directories_to_backup(db_file)?;
 
         for directory in directories {
