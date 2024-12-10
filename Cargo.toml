@@ -1,6 +1,6 @@
 [package]
 name = "backup"
-version = "0.0.4"
+version = "0.0.5"
 authors = ["Nicolas Embriz <nbari@tequila.io>"]
 description = "create encrypted backups"
 documentation = "https://github.com/nbari/backup"

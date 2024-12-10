@@ -37,10 +37,12 @@ pub async fn handle(action: Action, globals: GlobalArgs) -> Result<()> {
         let directories = get_directories_to_backup(&db_file)?;
 
         // Open a single connection to the database
-        let conn = Connection::open(db_file)?;
-        let conn = Mutex::new(conn);
+        let conn = Mutex::new(Connection::open(db_file)?);
 
         let mut tasks = FuturesUnordered::new();
+
+        // Limit the number of concurrent tasks to the number of physical cores - 2
+        let num_treads = cmp::min((num_cpus::get_physical() - 2).max(1), u8::MAX as usize);
 
         for directory in directories {
             if !directory.exists() {
@@ -55,10 +57,6 @@ pub async fn handle(action: Action, globals: GlobalArgs) -> Result<()> {
                         let file_path_clone = file_path.clone();
 
                         tasks.push(process_file(&conn, file_path_clone));
-
-                        // Limit the number of concurrent tasks to the number of physical cores - 2
-                        let num_treads =
-                            cmp::min((num_cpus::get_physical() - 2).max(1), u8::MAX as usize);
 
                         while tasks.len() >= num_treads {
                             if let Some(Err(err)) = tasks.next().await {
