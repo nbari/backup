@@ -5,6 +5,8 @@ use crate::{
 use anyhow::{anyhow, Result};
 use futures::stream::{FuturesUnordered, StreamExt};
 use ignore::WalkBuilder;
+use r2d2::Pool;
+use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::{params, Connection};
 use std::{
     cmp,
@@ -35,7 +37,14 @@ pub async fn handle(action: Action, globals: GlobalArgs) -> Result<()> {
             ));
         }
 
-        let directories = get_directories_to_backup(&db_file)?;
+        let manager = SqliteConnectionManager::file(&db_file);
+
+        let pool_size = cmp::min(num_cpus::get_physical(), 32) as u32;
+
+        // for the pool_size use number of physical cores or a max of 32
+        let pool = Arc::new(Pool::builder().max_size(pool_size).build(manager)?);
+
+        let directories = get_directories_to_backup(pool.clone())?;
 
         let mut tasks = FuturesUnordered::new();
 
@@ -55,24 +64,31 @@ pub async fn handle(action: Action, globals: GlobalArgs) -> Result<()> {
             for file_result in iterator {
                 match file_result {
                     Ok(file_path) => {
-                        let db_file = db_file.clone();
+                        let pool = pool.clone();
                         let semaphore = semaphore.clone();
 
                         tasks.push(async move {
                             let _permit = semaphore.acquire().await;
-                            process_file(db_file, file_path).await
+                            process_file(pool, file_path).await
                         });
                     }
-                    Err(err) => eprintln!("Error: {}", err),
+                    Err(err) => return Err(anyhow!("Failed to walk directory: {}", err)),
                 }
             }
         }
+
+        let mut errors = Vec::new();
 
         // Await all tasks and handle errors
         while let Some(result) = tasks.next().await {
             if let Err(err) = result {
                 eprintln!("Task failed: {}", err);
+                errors.push(err);
             }
+        }
+
+        if !errors.is_empty() {
+            return Err(anyhow!("Some tasks failed: {:?}", errors));
         }
     }
 
@@ -103,8 +119,8 @@ fn walk_directory(
 }
 
 // query the backup database for directories to backup
-fn get_directories_to_backup(db_file: &PathBuf) -> Result<Vec<PathBuf>> {
-    let conn = Connection::open(db_file)?;
+fn get_directories_to_backup(pool: Arc<Pool<SqliteConnectionManager>>) -> Result<Vec<PathBuf>> {
+    let conn = pool.get()?;
 
     let directories: Vec<String> = conn
         .prepare("SELECT path FROM config_directories")?
@@ -114,11 +130,12 @@ fn get_directories_to_backup(db_file: &PathBuf) -> Result<Vec<PathBuf>> {
     Ok(directories.iter().map(PathBuf::from).collect())
 }
 
-async fn process_file(db_file: PathBuf, file_path: PathBuf) -> Result<()> {
+async fn process_file(pool: Arc<Pool<SqliteConnectionManager>>, file_path: PathBuf) -> Result<()> {
     println!("Processing file: {}", file_path.display());
 
     let hash = calculate_hash(file_path.clone()).await?;
-    insert_file_into_db(db_file, file_path, hash).await
+
+    insert_file_into_db(pool, file_path, hash).await
 }
 
 async fn calculate_hash(file_path: PathBuf) -> Result<String> {
@@ -127,9 +144,13 @@ async fn calculate_hash(file_path: PathBuf) -> Result<String> {
         .map_err(|e| anyhow!("Hash computation failed: {}", e))
 }
 
-async fn insert_file_into_db(db_file: PathBuf, file_path: PathBuf, hash: String) -> Result<()> {
+async fn insert_file_into_db(
+    pool: Arc<Pool<SqliteConnectionManager>>,
+    file_path: PathBuf,
+    hash: String,
+) -> Result<()> {
     tokio::task::spawn_blocking(move || {
-        let conn = Connection::open(&db_file)?;
+        let conn = pool.get()?;
 
         let path = file_path
             .parent()
