@@ -14,8 +14,15 @@ use std::{
     sync::Arc,
 };
 use tokio::sync::Semaphore;
+use tracing::{error, instrument};
+
+fn log_error(message: &str) {
+    error!("{}", message); // Log with `error!`
+    eprintln!("{}", message); // Print to console
+}
 
 /// Handle the create action
+#[instrument]
 pub async fn handle(action: Action, globals: GlobalArgs) -> Result<()> {
     if let Action::Run {
         name,
@@ -31,10 +38,14 @@ pub async fn handle(action: Action, globals: GlobalArgs) -> Result<()> {
 
         // check if the database file exists
         if !db_file.exists() {
-            return Err(anyhow!(
+            let error_message = format!(
                 "No backup named \"{}\" found. Create a new backup first.",
                 name
-            ));
+            );
+
+            log_error(&error_message);
+
+            return Err(anyhow!(error_message));
         }
 
         let manager = SqliteConnectionManager::file(&db_file);
@@ -56,7 +67,9 @@ pub async fn handle(action: Action, globals: GlobalArgs) -> Result<()> {
 
         for directory in directories {
             if !directory.exists() {
-                return Err(anyhow!("Directory does not exist: {}", directory.display()));
+                let error_message = format!("Directory does not exist: {}", directory.display());
+                log_error(&error_message);
+                return Err(anyhow!(error_message));
             }
 
             let iterator = walk_directory(&directory, no_gitignore);
@@ -72,7 +85,10 @@ pub async fn handle(action: Action, globals: GlobalArgs) -> Result<()> {
                             process_file(pool, file_path).await
                         });
                     }
-                    Err(err) => return Err(anyhow!("Failed to walk directory: {}", err)),
+                    Err(err) => {
+                        let error_message = format!("Failed to walk directory: {}", err);
+                        log_error(&error_message);
+                    }
                 }
             }
         }

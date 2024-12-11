@@ -1,4 +1,4 @@
-use crate::cli::{actions::Action, commands, dispatch::handler, globals::GlobalArgs};
+use crate::cli::{actions::Action, commands, dispatch::handler, globals::GlobalArgs, telemetry};
 use anyhow::{Context, Result};
 use std::{fs, path::PathBuf};
 
@@ -16,6 +16,8 @@ pub fn get_config_path() -> Result<PathBuf> {
 
 /// Start the CLI
 pub fn start() -> Result<(Action, GlobalArgs)> {
+    telemetry::init(None)?;
+
     let config_path = get_config_path()?;
 
     let global_args = GlobalArgs::new(&config_path);
@@ -23,6 +25,7 @@ pub fn start() -> Result<(Action, GlobalArgs)> {
     let matches = commands::new(config_path).get_matches();
 
     let action = handler(&matches)?;
+
     Ok((action, global_args))
 }
 

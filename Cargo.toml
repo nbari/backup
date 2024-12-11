@@ -1,6 +1,6 @@
 [package]
 name = "backup"
-version = "0.0.7"
+version = "0.0.8"
 authors = ["Nicolas Embriz <nbari@tequila.io>"]
 description = "create encrypted backups"
 documentation = "https://github.com/nbari/backup"
@@ -23,11 +23,15 @@ futures = "0.3"
 ignore = "0.4.23"
 num_cpus = "1.16"
 openssl = { version = "0.10", optional = true, features = ["vendored"] }
+opentelemetry = "0.27"
+opentelemetry-otlp = { version = "0.27", features = ["tls", "tls-roots"] }
+opentelemetry_sdk = { version = "0.27", features = ["rt-tokio"] }
 r2d2 = "0.8.10"
 r2d2_sqlite = "0.25.0"
 rusqlite = { version = "0.32", features = ["bundled", "unlock_notify"] }
 tempfile = "3.14"
 tokio = { version = "1", features = ["full"] }
-tracing = "0.1.41"
-tracing-subscriber = "0.3.19"
+tracing = "0.1"
+tracing-opentelemetry = "0.28"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 walkdir = "2.5"
