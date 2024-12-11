@@ -9,8 +9,9 @@ use rusqlite::{params, Connection};
 use std::{
     cmp,
     path::{Path, PathBuf},
+    sync::Arc,
 };
-use tokio::sync::Mutex;
+use tokio::sync::Semaphore;
 
 /// Handle the create action
 pub async fn handle(action: Action, globals: GlobalArgs) -> Result<()> {
@@ -36,13 +37,13 @@ pub async fn handle(action: Action, globals: GlobalArgs) -> Result<()> {
 
         let directories = get_directories_to_backup(&db_file)?;
 
-        // Open a single connection to the database
-        let conn = Mutex::new(Connection::open(db_file)?);
-
         let mut tasks = FuturesUnordered::new();
 
-        // Limit the number of concurrent tasks to the number of physical cores - 2
+        // Limit the number of concurrent tasks to the number of physical cores - 2, max 255
         let num_treads = cmp::min((num_cpus::get_physical() - 2).max(1), u8::MAX as usize);
+
+        // Create a semaphore to limit the number of concurrent tasks
+        let semaphore = Arc::new(Semaphore::new(num_treads));
 
         for directory in directories {
             if !directory.exists() {
@@ -54,15 +55,13 @@ pub async fn handle(action: Action, globals: GlobalArgs) -> Result<()> {
             for file_result in iterator {
                 match file_result {
                     Ok(file_path) => {
-                        let file_path_clone = file_path.clone();
+                        let db_file = db_file.clone();
+                        let semaphore = semaphore.clone();
 
-                        tasks.push(process_file(&conn, file_path_clone));
-
-                        while tasks.len() >= num_treads {
-                            if let Some(Err(err)) = tasks.next().await {
-                                eprintln!("Task failed: {}", err);
-                            }
-                        }
+                        tasks.push(async move {
+                            let _permit = semaphore.acquire().await;
+                            process_file(db_file, file_path).await
+                        });
                     }
                     Err(err) => eprintln!("Error: {}", err),
                 }
@@ -77,19 +76,9 @@ pub async fn handle(action: Action, globals: GlobalArgs) -> Result<()> {
         }
     }
 
+    println!("Backup completed successfully.");
+
     Ok(())
-}
-
-// query the backup database for directories to backup
-fn get_directories_to_backup(db_file: &Path) -> Result<Vec<PathBuf>> {
-    let conn = Connection::open(db_file)?;
-
-    let directories: Vec<String> = conn
-        .prepare("SELECT path FROM config_directories")?
-        .query_map([], |row| row.get(0))?
-        .collect::<Result<_, _>>()?;
-
-    Ok(directories.iter().map(PathBuf::from).collect())
 }
 
 // Returns an iterator over files in a directory, respecting `.gitignore` rules unless `no_gitignore` is true.
@@ -113,69 +102,83 @@ fn walk_directory(
         })
 }
 
-async fn process_file(conn: &Mutex<Connection>, file_path: PathBuf) -> Result<()> {
+// query the backup database for directories to backup
+fn get_directories_to_backup(db_file: &PathBuf) -> Result<Vec<PathBuf>> {
+    let conn = Connection::open(db_file)?;
+
+    let directories: Vec<String> = conn
+        .prepare("SELECT path FROM config_directories")?
+        .query_map([], |row| row.get(0))?
+        .collect::<Result<_, _>>()?;
+
+    Ok(directories.iter().map(PathBuf::from).collect())
+}
+
+async fn process_file(db_file: PathBuf, file_path: PathBuf) -> Result<()> {
     println!("Processing file: {}", file_path.display());
 
-    // Extract path and filename
-    let path = file_path
-        .parent()
-        .ok_or_else(|| anyhow!("Invalid file path"))?;
+    let hash = calculate_hash(file_path.clone()).await?;
+    insert_file_into_db(db_file, file_path, hash).await
+}
 
-    let file_name = file_path
-        .file_name()
-        .ok_or_else(|| anyhow!("Invalid file name"))?
-        .to_string_lossy()
-        .to_string();
-
-    // Compute the hash asynchronously
-    let file_path_clone = file_path.clone();
-    let hash = tokio::task::spawn_blocking(move || blake3(&file_path_clone))
+async fn calculate_hash(file_path: PathBuf) -> Result<String> {
+    tokio::task::spawn_blocking(move || blake3(&file_path))
         .await?
-        .map_err(|e| anyhow!("Hash computation failed: {}", e))?;
-
-    // Insert path into the Paths table if not exists
-    let path_id = insert_or_get_path_id(conn, path).await?;
-
-    // Insert file hash into the Files table if not exists
-    let file_id = insert_or_get_file_id(conn, &hash).await?;
-
-    // Insert file name into the FileNames table
-    conn.lock().await.execute(
-        "INSERT OR IGNORE INTO FileNames (path_id, name, file_id, first_version, last_version, is_deleted)
-         VALUES (?1, ?2, ?3, ?4, NULL, 0)",
-        params![path_id, file_name, file_id, 1], // Assuming version 1 for simplicity
-    )?;
-
-    Ok(())
+        .map_err(|e| anyhow!("Hash computation failed: {}", e))
 }
 
-/// Insert a path into the Paths table if it does not exist, and return its ID
-async fn insert_or_get_path_id(conn: &Mutex<Connection>, path: &Path) -> Result<i64> {
-    let conn = conn.lock().await;
+async fn insert_file_into_db(db_file: PathBuf, file_path: PathBuf, hash: String) -> Result<()> {
+    tokio::task::spawn_blocking(move || {
+        let conn = Connection::open(&db_file)?;
 
-    let path_str = path.to_string_lossy();
-    conn.execute(
-        "INSERT OR IGNORE INTO Paths (path) VALUES (?1)",
-        params![path_str],
-    )?;
+        let path = file_path
+            .parent()
+            .ok_or_else(|| anyhow!("Invalid file path"))?
+            .to_string_lossy()
+            .to_string();
 
-    let mut stmt = conn.prepare("SELECT path_id FROM Paths WHERE path = ?1")?;
-    let path_id: i64 = stmt.query_row(params![path_str], |row| row.get(0))?;
+        let file_name = file_path
+            .file_name()
+            .ok_or_else(|| anyhow!("Invalid file name"))?
+            .to_string_lossy()
+            .to_string();
 
-    Ok(path_id)
+        let path_id = get_or_insert(&conn, "Paths", "path", "path_id", &path)?;
+        let file_id = get_or_insert(&conn, "Files", "hash", "file_id", &hash)?;
+
+        conn.execute(
+            "INSERT OR IGNORE INTO FileNames (path_id, name, file_id, first_version, last_version, is_deleted)
+             VALUES (?1, ?2, ?3, ?4, NULL, 0)",
+            params![path_id, file_name, file_id, 1],
+        )?;
+
+        Ok::<_, anyhow::Error>(())
+    })
+    .await?
 }
 
-/// Insert a file hash into the Files table if it does not exist, and return its ID
-async fn insert_or_get_file_id(conn: &Mutex<Connection>, hash: &str) -> Result<i64> {
-    let conn = conn.lock().await;
-
+fn get_or_insert(
+    conn: &Connection,
+    table: &str,
+    column: &str,
+    id_col: &str,
+    value: &str,
+) -> Result<i64> {
+    // INSERT OR IGNORE INTO Paths (path) VALUES (?1)
+    // SELECT path_id FROM Paths WHERE path = ?1
+    // INSERT OR IGNORE INTO Files (hash) VALUES (?1)
+    // SELECT file_id FROM Files WHERE hash = ?1
     conn.execute(
-        "INSERT OR IGNORE INTO Files (hash) VALUES (?1)",
-        params![hash],
+        &format!("INSERT OR IGNORE INTO {} ({}) VALUES (?1)", table, column),
+        params![value],
     )?;
 
-    let mut stmt = conn.prepare("SELECT file_id FROM Files WHERE hash = ?1")?;
-    let file_id: i64 = stmt.query_row(params![hash], |row| row.get(0))?;
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {} FROM {} WHERE {} = ?1",
+        id_col, table, column
+    ))?;
 
-    Ok(file_id)
+    let id: i64 = stmt.query_row(params![value], |row| row.get(0))?;
+
+    Ok(id)
 }
