@@ -4,7 +4,7 @@ use crate::{
 };
 use anyhow::{anyhow, Result};
 use futures::stream::{FuturesUnordered, StreamExt};
-use ignore::WalkBuilder;
+use ignore::{WalkBuilder, WalkParallel, WalkState};
 use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::{params, Connection};
@@ -14,11 +14,10 @@ use std::{
     sync::Arc,
 };
 use tokio::sync::Semaphore;
-use tracing::{error, instrument};
+use tracing::instrument;
 
 fn log_error(message: &str) {
-    error!("{}", message); // Log with `error!`
-    eprintln!("{}", message); // Print to console
+    eprintln!("{}", message);
 }
 
 /// Handle the create action
@@ -33,10 +32,9 @@ pub async fn handle(action: Action, globals: GlobalArgs) -> Result<()> {
     } = action
     {
         let home_dir = globals.home;
-
         let db_file = home_dir.join(format!("{}.db", name));
 
-        // check if the database file exists
+        // Check if the database file exists
         if !db_file.exists() {
             let error_message = format!(
                 "No backup named \"{}\" found. Create a new backup first.",
@@ -57,7 +55,7 @@ pub async fn handle(action: Action, globals: GlobalArgs) -> Result<()> {
 
         let directories = get_directories_to_backup(pool.clone())?;
 
-        let mut tasks = FuturesUnordered::new();
+        let tasks = Arc::new(tokio::sync::Mutex::new(FuturesUnordered::new()));
 
         // Limit the number of concurrent tasks to the number of physical cores - 2, max 255
         let num_treads = cmp::min((num_cpus::get_physical() - 2).max(1), u8::MAX as usize);
@@ -72,31 +70,51 @@ pub async fn handle(action: Action, globals: GlobalArgs) -> Result<()> {
                 return Err(anyhow!(error_message));
             }
 
-            let iterator = walk_directory(&directory, no_gitignore);
+            println!("Starting directory walk: {}", directory.display());
 
-            for file_result in iterator {
-                match file_result {
-                    Ok(file_path) => {
+            let walker = walk_directory(&directory, no_gitignore);
+            let pool = pool.clone();
+            let semaphore = semaphore.clone();
+            let tasks = tasks.clone();
+
+            walker.run(|| {
+                let semaphore = semaphore.clone();
+                let pool = pool.clone();
+                let tasks = tasks.clone();
+                Box::new(move |entry| match entry {
+                    Ok(dir_entry) if dir_entry.path().is_file() => {
+                        let file_path = dir_entry.path().to_path_buf();
                         let pool = pool.clone();
                         let semaphore = semaphore.clone();
+                        let tasks = tasks.clone();
 
-                        tasks.push(async move {
-                            let _permit = semaphore.acquire().await;
-                            process_file(pool, file_path).await
+                        tokio::task::block_in_place(move || {
+                            let _permit = semaphore.acquire();
+                            let tasks = tasks.blocking_lock();
+                            tasks.push(async move { process_file(pool, file_path).await });
                         });
+
+                        WalkState::Continue
                     }
+                    Ok(_) => WalkState::Continue,
                     Err(err) => {
                         let error_message = format!("Failed to walk directory: {}", err);
                         log_error(&error_message);
+                        WalkState::Continue
                     }
-                }
-            }
+                })
+            });
+
+            println!("Finished directory walk: {}", directory.display());
         }
 
         let mut errors = Vec::new();
 
         // Await all tasks and handle errors
-        while let Some(result) = tasks.next().await {
+        while let Some(result) = {
+            let mut guard = tasks.lock().await;
+            guard.next().await
+        } {
             if let Err(err) = result {
                 eprintln!("Task failed: {}", err);
                 errors.push(err);
@@ -113,11 +131,7 @@ pub async fn handle(action: Action, globals: GlobalArgs) -> Result<()> {
     Ok(())
 }
 
-// Returns an iterator over files in a directory, respecting `.gitignore` rules unless `no_gitignore` is true.
-fn walk_directory(
-    base_dir: &Path,
-    no_gitignore: bool,
-) -> impl Iterator<Item = Result<PathBuf, ignore::Error>> {
+fn walk_directory(base_dir: &Path, no_gitignore: bool) -> WalkParallel {
     WalkBuilder::new(base_dir)
         .follow_links(true)
         .hidden(false)
@@ -126,15 +140,9 @@ fn walk_directory(
         .git_ignore(!no_gitignore)
         .require_git(false)
         .parents(true)
-        .build()
-        .filter_map(|entry| match entry {
-            Ok(e) if e.path().is_file() => Some(Ok(e.into_path())),
-            Ok(_) => None,
-            Err(err) => Some(Err(err)),
-        })
+        .build_parallel()
 }
 
-// query the backup database for directories to backup
 fn get_directories_to_backup(pool: Arc<Pool<SqliteConnectionManager>>) -> Result<Vec<PathBuf>> {
     let conn = pool.get()?;
 
@@ -151,7 +159,9 @@ async fn process_file(pool: Arc<Pool<SqliteConnectionManager>>, file_path: PathB
 
     let hash = calculate_hash(file_path.clone()).await?;
 
-    insert_file_into_db(pool, file_path, hash).await
+    insert_file_into_db(pool, file_path, hash).await?;
+
+    Ok(())
 }
 
 async fn calculate_hash(file_path: PathBuf) -> Result<String> {
