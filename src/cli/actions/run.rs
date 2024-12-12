@@ -70,13 +70,38 @@ pub async fn handle(action: Action, globals: GlobalArgs) -> Result<()> {
             for file_result in iterator {
                 match file_result {
                     Ok(file_path) => {
-                        let pool = pool.clone();
-                        let semaphore = semaphore.clone();
+                        // Check if the file exists and is readable before adding to tasks
+                        if !file_path.exists() {
+                            println!(
+                                "Skipping file {} because it does not exist",
+                                file_path.display()
+                            );
+                            continue; // Skip non-existent files
+                        }
 
-                        tasks.push(async move {
-                            let _permit = semaphore.acquire().await;
-                            process_file(pool, file_path).await
-                        });
+                        // You can also check if the file is readable here if necessary
+                        match std::fs::File::open(&file_path) {
+                            Ok(_) => {
+                                // If file is openable, process it
+                                let pool = pool.clone();
+                                let semaphore = semaphore.clone();
+
+                                tasks.push(async move {
+                                    let _permit = semaphore.acquire().await;
+                                    process_file(pool, file_path).await
+                                });
+                            }
+                            Err(e) => {
+                                if e.kind() == std::io::ErrorKind::PermissionDenied {
+                                    println!(
+                                        "Skipping file {} due to permission error",
+                                        file_path.display()
+                                    );
+                                } else {
+                                    println!("Failed to open file {}: {}", file_path.display(), e);
+                                }
+                            }
+                        }
                     }
                     Err(err) => println!("Failed to walk directory: {}", err),
                 }
@@ -138,23 +163,7 @@ fn get_directories_to_backup(pool: Arc<Pool<SqliteConnectionManager>>) -> Result
 async fn process_file(pool: Arc<Pool<SqliteConnectionManager>>, file_path: PathBuf) -> Result<()> {
     println!("Processing file: {}", file_path.display());
 
-    let hash = match calculate_hash(file_path.clone()).await {
-        Ok(hash) => hash,
-        Err(e) => {
-            if let Some(io_error) = e.downcast_ref::<std::io::Error>() {
-                if io_error.kind() == std::io::ErrorKind::PermissionDenied {
-                    println!(
-                        "Skipping file {} due to permission error",
-                        file_path.display()
-                    );
-                    return Ok(());
-                }
-            }
-
-            // If the error is not a permission error, return the error
-            return Err(e);
-        }
-    };
+    let hash = calculate_hash(file_path.clone()).await?;
 
     insert_file_into_db(pool, file_path, hash).await?;
 
