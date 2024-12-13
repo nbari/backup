@@ -68,7 +68,6 @@ fn create_db_tables(db_path: &PathBuf) -> Result<()> {
     file_id INTEGER NOT NULL,        -- Foreign key referencing Files for content hash
     first_version INTEGER NOT NULL,  -- The version in which this file path first appeared
     last_version INTEGER,            -- The last version this file path was valid (NULL if still valid)
-    is_deleted BOOLEAN DEFAULT 0,    -- 1 if the file was deleted in this version, 0 otherwise
 
     FOREIGN KEY (path_id) REFERENCES Paths(path_id),
     FOREIGN KEY (file_id) REFERENCES Files(file_id),
@@ -89,7 +88,7 @@ fn create_db_tables(db_path: &PathBuf) -> Result<()> {
 
     // Index for efficient file retrieval by version
     conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_files_version ON FileNames (first_version, last_version, is_deleted)",
+        "CREATE INDEX IF NOT EXISTS idx_files_version ON FileNames (first_version, last_version)",
         [],
     )?;
 

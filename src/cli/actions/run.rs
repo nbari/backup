@@ -252,8 +252,8 @@ async fn insert_file_into_db(
         let file_id = get_or_insert(&conn, "Files", "hash", "file_id", &hash)?;
 
         conn.execute(
-            "INSERT INTO FileNames (path_id, name, file_id, first_version, is_deleted)
-             VALUES (?1, ?2, ?3, ?4, 0)
+            "INSERT INTO FileNames (path_id, name, file_id, first_version)
+             VALUES (?1, ?2, ?3, ?4)
              ON CONFLICT(path_id, file_id, name) DO UPDATE SET
              last_version = ?4",
             params![path_id, file_name, file_id, version],

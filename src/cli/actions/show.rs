@@ -3,6 +3,27 @@ use anyhow::{anyhow, Result};
 use rusqlite::Connection;
 use std::{fs, path::PathBuf};
 
+// TODO
+// show backed up files
+/*
+
+retrive a version 
+SELECT Paths.path || '/' || FileNames.name AS full_path
+FROM FileNames
+JOIN Paths ON FileNames.path_id = Paths.path_id
+WHERE first_version <= ?1
+  AND (last_version IS NULL OR last_version >= ?1);
+
+Get only new files after a version
+SELECT Paths.path || '/' || FileNames.name AS full_path
+FROM FileNames
+JOIN Paths ON FileNames.path_id = Paths.path_id
+WHERE first_version = 4
+  AND (last_version IS NULL OR last_version >=4);
+
+
+*/
+
 /// Handle the create action
 pub fn handle(action: Action, globals: GlobalArgs) -> Result<()> {
     if matches!(action, Action::Show) {
