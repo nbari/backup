@@ -117,6 +117,9 @@ fn create_db_config_direcories_table(db_path: &PathBuf, dirs: Vec<PathBuf>) -> R
         [],
     )?;
 
+    // truncate the table to remove any existing entries
+    conn.execute("DELETE FROM config_directories", [])?;
+
     // Prepare the insert statement
     let mut stmt = conn.prepare("INSERT OR IGNORE INTO config_directories (path) VALUES (?1)")?;
 

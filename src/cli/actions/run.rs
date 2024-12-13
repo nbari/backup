@@ -36,7 +36,7 @@ pub async fn handle(action: Action, globals: GlobalArgs) -> Result<()> {
     {
         let home_dir = globals.home;
 
-        let skipped_files_log = home_dir.join("skipped_files.log");
+        let skipped_files_log = home_dir.join(format!("{}-skipped_files.log", name));
 
         // Truncate the log file
         write(&skipped_files_log, "").await?;
