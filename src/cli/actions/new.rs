@@ -14,6 +14,14 @@ pub fn handle(action: Action) -> Result<()> {
     {
         let db_path = config.join(format!("{}.db", name));
 
+        // check if file already exists
+        if db_path.exists() {
+            return Err(anyhow::anyhow!(
+                "A backup with the name '{}' already exists",
+                name
+            ));
+        }
+
         // Create the backup database tables
         create_db_tables(&db_path)?;
 
@@ -65,7 +73,7 @@ fn create_db_tables(db_path: &PathBuf) -> Result<()> {
     FOREIGN KEY (path_id) REFERENCES Paths(path_id),
     FOREIGN KEY (file_id) REFERENCES Files(file_id),
 
-    UNIQUE(path_id, name, first_version) -- Ensure unique entries by path and version
+    UNIQUE(path_id, file_id, name) -- Ensure unique entries by path and version
 )",
         [],
     )?;
@@ -116,9 +124,6 @@ fn create_db_config_direcories_table(db_path: &PathBuf, dirs: Vec<PathBuf>) -> R
 )",
         [],
     )?;
-
-    // truncate the table to remove any existing entries
-    conn.execute("DELETE FROM config_directories", [])?;
 
     // Prepare the insert statement
     let mut stmt = conn.prepare("INSERT OR IGNORE INTO config_directories (path) VALUES (?1)")?;

@@ -14,7 +14,7 @@ use std::{
     sync::Arc,
 };
 use tokio::{
-    fs::{write, OpenOptions},
+    fs::{remove_file, write, OpenOptions},
     io::{self, AsyncWriteExt},
     sync::Semaphore,
 };
@@ -64,6 +64,11 @@ pub async fn handle(action: Action, globals: GlobalArgs) -> Result<()> {
 
         let pool = Arc::new(Pool::builder().max_size(pool_size).build(manager)?);
 
+        // create backup version
+        let backup_version = get_backup_version(pool.clone())?;
+
+        println!("Backup version: {}\n", backup_version);
+
         // get the directories to backup
         let directories = get_directories_to_backup(pool.clone())?;
 
@@ -92,7 +97,7 @@ pub async fn handle(action: Action, globals: GlobalArgs) -> Result<()> {
 
                             tasks.push(async move {
                                 let _permit = semaphore.acquire().await;
-                                process_file(pool, file_path, log_file).await
+                                process_file(pool, backup_version, file_path, log_file).await
                             });
                         } else {
                             log_skipped_file(&skipped_files_log, &file_path).await?;
@@ -120,7 +125,10 @@ pub async fn handle(action: Action, globals: GlobalArgs) -> Result<()> {
         println!();
 
         // Check if the log file is not empty and print its path
-        if !is_log_file_empty(&skipped_files_log).await? {
+        if is_log_file_empty(&skipped_files_log).await? {
+            // delete the log file if it is empty
+            remove_file(&skipped_files_log).await?;
+        } else {
             println!(
                 "Some files were skipped. Check the log file: {}",
                 skipped_files_log.display()
@@ -171,8 +179,22 @@ fn get_directories_to_backup(pool: Arc<Pool<SqliteConnectionManager>>) -> Result
     Ok(directories.iter().map(PathBuf::from).collect())
 }
 
+fn get_backup_version(pool: Arc<Pool<SqliteConnectionManager>>) -> Result<i64> {
+    let conn = pool.get()?;
+
+    conn.execute(
+        "INSERT INTO BackupVersions (timestamp) VALUES (strftime('%s', 'now'))",
+        [],
+    )?;
+
+    let version_id = conn.last_insert_rowid();
+
+    Ok(version_id)
+}
+
 async fn process_file(
     pool: Arc<Pool<SqliteConnectionManager>>,
+    version: i64,
     file_path: PathBuf,
     skipped_files_log: PathBuf,
 ) -> Result<()> {
@@ -187,7 +209,7 @@ async fn process_file(
         }
     };
 
-    insert_file_into_db(pool, file_path, hash).await?;
+    insert_file_into_db(pool, version, file_path, hash).await?;
 
     Ok(())
 }
@@ -207,6 +229,7 @@ async fn calculate_hash(file_path: PathBuf) -> Result<String> {
 
 async fn insert_file_into_db(
     pool: Arc<Pool<SqliteConnectionManager>>,
+    version: i64,
     file_path: PathBuf,
     hash: String,
 ) -> Result<()> {
@@ -229,9 +252,11 @@ async fn insert_file_into_db(
         let file_id = get_or_insert(&conn, "Files", "hash", "file_id", &hash)?;
 
         conn.execute(
-            "INSERT OR IGNORE INTO FileNames (path_id, name, file_id, first_version, last_version, is_deleted)
-             VALUES (?1, ?2, ?3, ?4, NULL, 0)",
-            params![path_id, file_name, file_id, 1],
+            "INSERT INTO FileNames (path_id, name, file_id, first_version, is_deleted)
+             VALUES (?1, ?2, ?3, ?4, 0)
+             ON CONFLICT(path_id, file_id, name) DO UPDATE SET
+             last_version = ?4",
+            params![path_id, file_name, file_id, version],
         )?;
 
         Ok::<_, anyhow::Error>(())
