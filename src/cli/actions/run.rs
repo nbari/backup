@@ -10,17 +10,18 @@ use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::{params, Connection};
 use std::{
     cmp,
-    fs::{File, OpenOptions},
-    io,
-    io::Write,
     path::{Path, PathBuf},
     sync::Arc,
 };
-use tokio::sync::Semaphore;
+use tokio::{
+    fs::{write, OpenOptions},
+    io::{self, AsyncWriteExt},
+    sync::Semaphore,
+};
 use tracing::instrument;
 
 /// Handle the create action
-#[instrument]
+#[instrument(skip(action, globals))]
 pub async fn handle(action: Action, globals: GlobalArgs) -> Result<()> {
     // start a timer to measure the time taken to run the backup
     let timer = globals.timer.start();
@@ -35,10 +36,10 @@ pub async fn handle(action: Action, globals: GlobalArgs) -> Result<()> {
     {
         let home_dir = globals.home;
 
-        // Log file for skipped files
         let skipped_files_log = home_dir.join("skipped_files.log");
 
-        truncate_log_file(&skipped_files_log)?;
+        // Truncate the log file
+        write(&skipped_files_log, "").await?;
 
         let db_file = home_dir.join(format!("{}.db", name));
 
@@ -50,6 +51,7 @@ pub async fn handle(action: Action, globals: GlobalArgs) -> Result<()> {
             ));
         }
 
+        // Setup database connection pool
         let manager = SqliteConnectionManager::file(&db_file).with_init(|conn| {
             conn.execute_batch(
                 "PRAGMA journal_mode = WAL;
@@ -57,10 +59,12 @@ pub async fn handle(action: Action, globals: GlobalArgs) -> Result<()> {
             )
         });
 
+        // use the number of physical cores as the pool size, but limit it to 32
         let pool_size = cmp::min(num_cpus::get_physical(), 32) as u32;
 
         let pool = Arc::new(Pool::builder().max_size(pool_size).build(manager)?);
 
+        // get the directories to backup
         let directories = get_directories_to_backup(pool.clone())?;
 
         let mut tasks = FuturesUnordered::new();
@@ -91,10 +95,10 @@ pub async fn handle(action: Action, globals: GlobalArgs) -> Result<()> {
                                 process_file(pool, file_path, log_file).await
                             });
                         } else {
-                            log_skipped_file(&skipped_files_log, &file_path)?;
+                            log_skipped_file(&skipped_files_log, &file_path).await?;
                         }
                     }
-                    Err(err) => println!("Failed to walk directory: {}", err),
+                    Err(err) => eprintln!("Failed to walk directory: {}", err),
                 }
             }
         }
@@ -116,7 +120,7 @@ pub async fn handle(action: Action, globals: GlobalArgs) -> Result<()> {
         println!();
 
         // Check if the log file is not empty and print its path
-        if !is_log_file_empty(&skipped_files_log)? {
+        if !is_log_file_empty(&skipped_files_log).await? {
             println!(
                 "Some files were skipped. Check the log file: {}",
                 skipped_files_log.display()
@@ -178,7 +182,7 @@ async fn process_file(
         Ok(h) => h,
         Err(e) => {
             eprintln!("Skipping file: {}", e);
-            log_skipped_file(&skipped_files_log, &file_path)?;
+            log_skipped_file(&skipped_files_log, &file_path).await?;
             return Ok(());
         }
     };
@@ -261,23 +265,21 @@ fn get_or_insert(
     Ok(id)
 }
 
-// Truncate the log file at the start
-fn truncate_log_file(log_file: &Path) -> Result<()> {
-    File::create(log_file)
-        .map(|_| ())
-        .map_err(|e| anyhow!("Failed to truncate log file: {}", e))
-}
-
 // Check if the log file is empty
-fn is_log_file_empty(log_file: &Path) -> io::Result<bool> {
-    Ok(log_file.metadata()?.len() == 0)
+async fn is_log_file_empty(log_file: &Path) -> io::Result<bool> {
+    let metadata = tokio::fs::metadata(log_file).await?;
+    Ok(metadata.len() == 0)
 }
 
-fn log_skipped_file(log_file: &Path, file_path: &Path) -> Result<()> {
+async fn log_skipped_file(log_file: &Path, file_path: &Path) -> Result<()> {
     let mut file = OpenOptions::new()
         .create(true)
         .append(true)
-        .open(log_file)?;
-    writeln!(file, "{}", file_path.display())?;
+        .open(log_file)
+        .await?;
+
+    file.write_all(format!("{}\n", &file_path.display()).as_bytes())
+        .await?;
+
     Ok(())
 }
