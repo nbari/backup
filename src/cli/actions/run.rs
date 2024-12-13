@@ -1,6 +1,6 @@
 use crate::{
     cli::{actions::Action, globals::GlobalArgs},
-    utils::hash::blake3,
+    utils::{format::format_duration, hash::blake3},
 };
 use anyhow::{anyhow, Result};
 use futures::stream::{FuturesUnordered, StreamExt};
@@ -10,6 +10,9 @@ use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::{params, Connection};
 use std::{
     cmp,
+    fs::{File, OpenOptions},
+    io,
+    io::Write,
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -19,6 +22,9 @@ use tracing::instrument;
 /// Handle the create action
 #[instrument]
 pub async fn handle(action: Action, globals: GlobalArgs) -> Result<()> {
+    // start a timer to measure the time taken to run the backup
+    let timer = globals.timer.start();
+
     if let Action::Run {
         name,
         no_gitignore,
@@ -28,6 +34,12 @@ pub async fn handle(action: Action, globals: GlobalArgs) -> Result<()> {
     } = action
     {
         let home_dir = globals.home;
+
+        // Log file for skipped files
+        let skipped_files_log = home_dir.join("skipped_files.log");
+
+        truncate_log_file(&skipped_files_log)?;
+
         let db_file = home_dir.join(format!("{}.db", name));
 
         // Check if the database file exists
@@ -47,7 +59,6 @@ pub async fn handle(action: Action, globals: GlobalArgs) -> Result<()> {
 
         let pool_size = cmp::min(num_cpus::get_physical(), 32) as u32;
 
-        // for the pool_size use number of physical cores or a max of 32
         let pool = Arc::new(Pool::builder().max_size(pool_size).build(manager)?);
 
         let directories = get_directories_to_backup(pool.clone())?;
@@ -70,37 +81,17 @@ pub async fn handle(action: Action, globals: GlobalArgs) -> Result<()> {
             for file_result in iterator {
                 match file_result {
                     Ok(file_path) => {
-                        // Check if the file exists and is readable before adding to tasks
-                        if !file_path.exists() {
-                            println!(
-                                "Skipping file {} because it does not exist",
-                                file_path.display()
-                            );
-                            continue; // Skip non-existent files
-                        }
+                        if file_path.exists() {
+                            let pool = pool.clone();
+                            let semaphore = semaphore.clone();
+                            let log_file = skipped_files_log.clone();
 
-                        // You can also check if the file is readable here if necessary
-                        match std::fs::File::open(&file_path) {
-                            Ok(_) => {
-                                // If file is openable, process it
-                                let pool = pool.clone();
-                                let semaphore = semaphore.clone();
-
-                                tasks.push(async move {
-                                    let _permit = semaphore.acquire().await;
-                                    process_file(pool, file_path).await
-                                });
-                            }
-                            Err(e) => {
-                                if e.kind() == std::io::ErrorKind::PermissionDenied {
-                                    println!(
-                                        "Skipping file {} due to permission error",
-                                        file_path.display()
-                                    );
-                                } else {
-                                    println!("Failed to open file {}: {}", file_path.display(), e);
-                                }
-                            }
+                            tasks.push(async move {
+                                let _permit = semaphore.acquire().await;
+                                process_file(pool, file_path, log_file).await
+                            });
+                        } else {
+                            log_skipped_file(&skipped_files_log, &file_path)?;
                         }
                     }
                     Err(err) => println!("Failed to walk directory: {}", err),
@@ -121,9 +112,25 @@ pub async fn handle(action: Action, globals: GlobalArgs) -> Result<()> {
         if !errors.is_empty() {
             return Err(anyhow!("Some tasks failed: {:?}", errors));
         }
+
+        println!();
+
+        // Check if the log file is not empty and print its path
+        if !is_log_file_empty(&skipped_files_log)? {
+            println!(
+                "Some files were skipped. Check the log file: {}",
+                skipped_files_log.display()
+            );
+        }
     }
 
-    println!("Backup completed successfully.");
+    // Get the elapsed time
+    let elapsed = timer.elapsed();
+
+    // Format the elapsed time
+    let formatted_time = format_duration(elapsed);
+
+    println!("Backup completed successfully in: {formatted_time}.");
 
     Ok(())
 }
@@ -160,10 +167,21 @@ fn get_directories_to_backup(pool: Arc<Pool<SqliteConnectionManager>>) -> Result
     Ok(directories.iter().map(PathBuf::from).collect())
 }
 
-async fn process_file(pool: Arc<Pool<SqliteConnectionManager>>, file_path: PathBuf) -> Result<()> {
+async fn process_file(
+    pool: Arc<Pool<SqliteConnectionManager>>,
+    file_path: PathBuf,
+    skipped_files_log: PathBuf,
+) -> Result<()> {
     println!("Processing file: {}", file_path.display());
 
-    let hash = calculate_hash(file_path.clone()).await?;
+    let hash = match calculate_hash(file_path.clone()).await {
+        Ok(h) => h,
+        Err(e) => {
+            eprintln!("Skipping file: {}", e);
+            log_skipped_file(&skipped_files_log, &file_path)?;
+            return Ok(());
+        }
+    };
 
     insert_file_into_db(pool, file_path, hash).await?;
 
@@ -241,4 +259,25 @@ fn get_or_insert(
     let id: i64 = stmt.query_row(params![value], |row| row.get(0))?;
 
     Ok(id)
+}
+
+// Truncate the log file at the start
+fn truncate_log_file(log_file: &Path) -> Result<()> {
+    File::create(log_file)
+        .map(|_| ())
+        .map_err(|e| anyhow!("Failed to truncate log file: {}", e))
+}
+
+// Check if the log file is empty
+fn is_log_file_empty(log_file: &Path) -> io::Result<bool> {
+    Ok(log_file.metadata()?.len() == 0)
+}
+
+fn log_skipped_file(log_file: &Path, file_path: &Path) -> Result<()> {
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_file)?;
+    writeln!(file, "{}", file_path.display())?;
+    Ok(())
 }
