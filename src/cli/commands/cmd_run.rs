@@ -13,25 +13,25 @@ pub fn command() -> Command {
             Arg::new("no-gitignore")
                 .long("no-gitignore")
                 .help("Ignore parsing .gitignore files in the backup directory")
-                .number_of_values(0),
+                .num_args(0),
         )
         .arg(
             Arg::new("no-compression")
                 .long("no-compression")
                 .help("Do not compress the backup")
-                .number_of_values(0),
+                .num_args(0),
         )
         .arg(
             Arg::new("no-encryption")
                 .long("no-encryption")
                 .help("Do not encrypt the backup")
-                .number_of_values(0),
+                .num_args(0),
         )
         .arg(
             Arg::new("dry-run")
                 .long("dry-run")
                 .help("Do not create the backup, only show what would be done")
-                .number_of_values(0),
+                .num_args(0),
         )
 }
 
