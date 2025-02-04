@@ -18,7 +18,7 @@ blake3 = "1.5"
 chrono = "0.4"
 clap = { version = "4", features = ["string", "env"] }
 config = { version = "0.15", default-features = false, features = ["yaml"] }
-dirs = "5"
+dirs = "6"
 futures = "0.3"
 ignore = "0.4.23"
 num_cpus = "1.16"
@@ -27,8 +27,8 @@ opentelemetry = "0.27"
 opentelemetry-otlp = { version = "0.27", features = ["tls", "tls-roots"] }
 opentelemetry_sdk = { version = "0.27", features = ["rt-tokio"] }
 r2d2 = "0.8.10"
-r2d2_sqlite = "0.25.0"
-rusqlite = { version = "0.32", features = ["bundled", "unlock_notify"] }
+r2d2_sqlite = "0.26.0"
+rusqlite = { version = "0.33", features = ["bundled", "unlock_notify"] }
 tempfile = "3.14"
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
