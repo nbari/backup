@@ -7,7 +7,7 @@ use std::{fs, path::PathBuf};
 // show backed up files
 /*
 
-retrive a version 
+retrieve a version
 SELECT Paths.path || '/' || FileNames.name AS full_path
 FROM FileNames
 JOIN Paths ON FileNames.path_id = Paths.path_id
