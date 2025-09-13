@@ -31,7 +31,7 @@ pub async fn handle(action: Action, globals: GlobalArgs) -> Result<()> {
         no_gitignore,
         no_compression: _,
         no_encryption: _,
-        dry_run: _,
+        dry_run,
     } = action
     {
         let home_dir = globals.home;
@@ -65,7 +65,11 @@ pub async fn handle(action: Action, globals: GlobalArgs) -> Result<()> {
         let pool = Arc::new(Pool::builder().max_size(pool_size).build(manager)?);
 
         // create backup version
-        let backup_version = get_backup_version(pool.clone())?;
+        let backup_version = if dry_run {
+            0
+        } else {
+            get_backup_version(pool.clone())?
+        };
 
         println!("Backup version: {}\n", backup_version);
 
@@ -208,6 +212,11 @@ async fn process_file(
             return Ok(());
         }
     };
+
+    if version == 0 {
+        // dry run, skip database insertion
+        return Ok(());
+    }
 
     insert_file_into_db(pool, version, file_path, hash).await?;
 
