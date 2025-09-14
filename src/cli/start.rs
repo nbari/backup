@@ -16,14 +16,21 @@ pub fn get_config_path() -> Result<PathBuf> {
 
 /// Start the CLI
 pub fn start() -> Result<(Action, GlobalArgs)> {
-    telemetry::init(None)?;
-
     let config_path = get_config_path()?;
 
     let global_args = GlobalArgs::new(&config_path);
 
     let matches = commands::new(config_path).get_matches();
 
+    let verbosity_level = match matches.get_count("verbose") {
+        0 => None,
+        1 => Some(tracing::Level::INFO),
+        2 => Some(tracing::Level::DEBUG),
+        3 => Some(tracing::Level::TRACE),
+        _ => Some(tracing::Level::TRACE),
+    };
+
+    telemetry::init(verbosity_level)?;
     let action = handler(&matches)?;
 
     Ok((action, global_args))

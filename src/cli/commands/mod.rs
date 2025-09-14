@@ -31,6 +31,14 @@ pub fn new(config_path: PathBuf) -> Command {
                 .default_value(config_path.into_os_string())
                 .global(true),
         )
+        .arg(
+            Arg::new("verbose")
+                .short('v')
+                .long("verbose")
+                .help("Increase output verbosity (use -vv for more verbosity)")
+                .global(true)
+                .action(clap::ArgAction::Count),
+        )
         .subcommand(cmd_edit::command())
         .subcommand(cmd_new::command())
         .subcommand(cmd_run::command())

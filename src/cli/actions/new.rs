@@ -1,7 +1,11 @@
 use crate::cli::actions::Action;
 use anyhow::Result;
+use base64::{engine::general_purpose::STANDARD, Engine as _};
+use bip39::{Language, Mnemonic};
 use rusqlite::{params, Connection};
 use std::path::{Path, PathBuf};
+use tracing::debug;
+use x25519_dalek::{PublicKey, StaticSecret};
 
 /// Handle the create action
 pub fn handle(action: Action) -> Result<()> {
@@ -25,6 +29,33 @@ pub fn handle(action: Action) -> Result<()> {
         // Create the backup database tables
         create_db_tables(&db_path)?;
 
+        let mnemonic = Mnemonic::generate_in(Language::English, 12)?;
+
+        let m = mnemonic.to_string();
+
+        let words: Vec<&str> = m.split_whitespace().collect();
+        println!("Your recovery phrase is:\n");
+        println!("[ {} ]\n", mnemonic);
+        for (i, word) in words.iter().enumerate() {
+            print!("{:2}. {:12}", i + 1, word);
+            if (i + 1) % 4 == 0 {
+                println!(); // New line every 4 words
+            }
+        }
+        println!("\n\nPlease write this down and store it in a safe place.");
+
+        // Derive the keypair from the mnemonic
+        let seed = mnemonic.to_seed("");
+        let mut seed_bytes = [0u8; 32];
+        seed_bytes.copy_from_slice(&seed[0..32]);
+        let private_key = StaticSecret::from(seed_bytes);
+        let public_key = PublicKey::from(&private_key);
+
+        debug!("Public Key: {:?}", hex::encode(public_key.as_bytes()));
+
+        // save the public key to the database
+        save_public_key(&db_path, &public_key)?;
+
         let backup_dirs = get_unique_dir_parents(directory.unwrap_or_default());
 
         // create the config_directories table
@@ -41,11 +72,22 @@ pub fn handle(action: Action) -> Result<()> {
 fn create_db_tables(db_path: &PathBuf) -> Result<()> {
     let conn = Connection::open(db_path)?;
 
+    // table to store config info, like public key
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS Config (
+    name TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+)",
+        [],
+    )?;
+
     // table to store unique file content, using content hash to avoid duplicates
     conn.execute(
         "CREATE TABLE IF NOT EXISTS Files (
     file_id INTEGER PRIMARY KEY,
-    hash TEXT NOT NULL UNIQUE
+    hash TEXT NOT NULL UNIQUE,
+    encrypted_key BLOB NOT NULL,
+    ephemeral_public_key BLOB NOT NULL
 )",
         [],
     )?;
@@ -90,6 +132,18 @@ fn create_db_tables(db_path: &PathBuf) -> Result<()> {
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_files_version ON FileNames (first_version, last_version)",
         [],
+    )?;
+
+    Ok(())
+}
+
+fn save_public_key(db_path: &PathBuf, public_key: &PublicKey) -> Result<()> {
+    let conn = Connection::open(db_path)?;
+
+    let public_key_b64 = STANDARD.encode(public_key.as_bytes());
+    conn.execute(
+        "INSERT INTO Config (name, value) VALUES ('public_key', ?1)",
+        params![public_key_b64],
     )?;
 
     Ok(())

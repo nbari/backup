@@ -1,5 +1,8 @@
 use crate::{
-    cli::{actions::Action, globals::GlobalArgs},
+    cli::{
+        actions::{generate_file_key, get_public_key, kek_wrap, Action},
+        globals::GlobalArgs,
+    },
     utils::{format::format_duration, hash::blake3},
 };
 use anyhow::{anyhow, Result};
@@ -18,7 +21,8 @@ use tokio::{
     io::{self, AsyncWriteExt},
     sync::Semaphore,
 };
-use tracing::instrument;
+use tracing::{debug, instrument};
+use x25519_dalek::PublicKey;
 
 /// Handle the create action
 #[instrument(skip(action, globals))]
@@ -37,6 +41,8 @@ pub async fn handle(action: Action, globals: GlobalArgs) -> Result<()> {
         let home_dir = globals.home;
 
         let skipped_files_log = home_dir.join(format!("{}-skipped_files.log", name));
+
+        debug!("Skipped files log: {}", skipped_files_log.display());
 
         // Truncate the log file
         write(&skipped_files_log, "").await?;
@@ -84,6 +90,11 @@ pub async fn handle(action: Action, globals: GlobalArgs) -> Result<()> {
         // Create a semaphore to limit the number of concurrent tasks
         let semaphore = Arc::new(Semaphore::new(num_treads));
 
+        // Get private key from database
+        let public_key = get_public_key(&db_file)?;
+
+        debug!("Public Key: {:?}", hex::encode(public_key));
+
         for directory in directories {
             if !directory.exists() {
                 return Err(anyhow!("Directory does not exist: {}", directory.display()));
@@ -101,7 +112,8 @@ pub async fn handle(action: Action, globals: GlobalArgs) -> Result<()> {
 
                             tasks.push(async move {
                                 let _permit = semaphore.acquire().await;
-                                process_file(pool, backup_version, file_path, log_file).await
+                                process_file(pool, public_key, backup_version, file_path, log_file)
+                                    .await
                             });
                         } else {
                             log_skipped_file(&skipped_files_log, &file_path).await?;
@@ -198,6 +210,7 @@ fn get_backup_version(pool: Arc<Pool<SqliteConnectionManager>>) -> Result<i64> {
 
 async fn process_file(
     pool: Arc<Pool<SqliteConnectionManager>>,
+    public_key: PublicKey,
     version: i64,
     file_path: PathBuf,
     skipped_files_log: PathBuf,
@@ -218,7 +231,14 @@ async fn process_file(
         return Ok(());
     }
 
-    insert_file_into_db(pool, version, file_path, hash).await?;
+    debug!(
+        "Inserting file into database: {} with hash: {} backup version: {}",
+        file_path.display(),
+        hash,
+        version
+    );
+
+    insert_file_into_db(pool, public_key, version, file_path, hash).await?;
 
     Ok(())
 }
@@ -238,6 +258,7 @@ async fn calculate_hash(file_path: PathBuf) -> Result<String> {
 
 async fn insert_file_into_db(
     pool: Arc<Pool<SqliteConnectionManager>>,
+    public_key: PublicKey,
     version: i64,
     file_path: PathBuf,
     hash: String,
@@ -257,8 +278,12 @@ async fn insert_file_into_db(
             .to_string_lossy()
             .to_string();
 
-        let path_id = get_or_insert(&conn, "Paths", "path", "path_id", &path)?;
-        let file_id = get_or_insert(&conn, "Files", "hash", "file_id", &hash)?;
+        // INSERT OR IGNORE INTO Paths (path) VALUES (?1)
+        // SELECT path_id FROM Paths WHERE path = ?1
+        // INSERT OR IGNORE INTO Files (hash) VALUES (?1)
+        // SELECT file_id FROM Files WHERE hash = ?1
+        let path_id = get_or_insert_path(&conn, &path)?;
+        let file_id = get_or_insert_file(&conn, &hash, public_key)?;
 
         conn.execute(
             "INSERT INTO FileNames (path_id, name, file_id, first_version)
@@ -273,28 +298,32 @@ async fn insert_file_into_db(
     .await?
 }
 
-fn get_or_insert(
-    conn: &Connection,
-    table: &str,
-    column: &str,
-    id_col: &str,
-    value: &str,
-) -> Result<i64> {
-    // INSERT OR IGNORE INTO Paths (path) VALUES (?1)
-    // SELECT path_id FROM Paths WHERE path = ?1
-    // INSERT OR IGNORE INTO Files (hash) VALUES (?1)
-    // SELECT file_id FROM Files WHERE hash = ?1
+fn get_or_insert_path(conn: &Connection, path: &str) -> Result<i64> {
     conn.execute(
-        &format!("INSERT OR IGNORE INTO {} ({}) VALUES (?1)", table, column),
-        params![value],
+        "INSERT OR IGNORE INTO Paths (path) VALUES (?1)",
+        params![path],
     )?;
 
-    let mut stmt = conn.prepare(&format!(
-        "SELECT {} FROM {} WHERE {} = ?1",
-        id_col, table, column
-    ))?;
+    let mut stmt = conn.prepare("SELECT path_id FROM Paths WHERE path = ?1")?;
 
-    let id: i64 = stmt.query_row(params![value], |row| row.get(0))?;
+    let id: i64 = stmt.query_row(params![path], |row| row.get(0))?;
+
+    Ok(id)
+}
+
+fn get_or_insert_file(conn: &Connection, hash: &str, public_key: PublicKey) -> Result<i64> {
+    let file_key = generate_file_key(); // 32 random bytes
+
+    let (wrapped, e_public) = kek_wrap(&file_key, hash, &public_key)?;
+
+    conn.execute(
+        "INSERT OR IGNORE INTO Files (hash, encrypted_key, ephemeral_public_key) VALUES (?1, ?2, ?3)",
+        params![hash, wrapped, e_public],
+    )?;
+
+    let mut stmt = conn.prepare("SELECT file_id FROM Files WHERE hash = ?1")?;
+
+    let id: i64 = stmt.query_row(params![hash], |row| row.get(0))?;
 
     Ok(id)
 }

@@ -48,7 +48,7 @@ pub fn init(verbosity_level: Option<Level>) -> Result<()> {
         .with_thread_ids(false)
         .with_thread_names(false)
         .with_target(false)
-        .json();
+        .pretty();
 
     // RUST_LOG=
     let filter = EnvFilter::builder()
