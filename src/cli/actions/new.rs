@@ -31,24 +31,15 @@ pub fn handle(action: Action) -> Result<()> {
 
         let mnemonic = Mnemonic::generate_in(Language::English, 12)?;
 
-        let m = mnemonic.to_string();
-
-        let words: Vec<&str> = m.split_whitespace().collect();
-        println!("Your recovery phrase is:\n");
-        println!("[ {} ]\n", mnemonic);
-        for (i, word) in words.iter().enumerate() {
-            print!("{:2}. {:12}", i + 1, word);
-            if (i + 1) % 4 == 0 {
-                println!(); // New line every 4 words
-            }
-        }
-        println!("\n\nPlease write this down and store it in a safe place.");
-
         // Derive the keypair from the mnemonic
         let seed = mnemonic.to_seed("");
+
         let mut seed_bytes = [0u8; 32];
+
         seed_bytes.copy_from_slice(&seed[0..32]);
+
         let private_key = StaticSecret::from(seed_bytes);
+
         let public_key = PublicKey::from(&private_key);
 
         debug!("Public Key: {:?}", hex::encode(public_key.as_bytes()));
@@ -64,6 +55,24 @@ pub fn handle(action: Action) -> Result<()> {
         // create the config_files tables
         // exclude files if they are within the directories that are being backed up
         create_db_config_files_table(&db_path, file.unwrap_or_default())?;
+
+        // Display the mnemonic to the user
+        let m = mnemonic.to_string();
+
+        let words: Vec<&str> = m.split_whitespace().collect();
+
+        println!("Your recovery phrase is:\n");
+
+        println!("[ {} ]\n", mnemonic);
+
+        for (i, word) in words.iter().enumerate() {
+            print!("{:2}. {:12}", i + 1, word);
+            if (i + 1) % 4 == 0 {
+                println!(); // New line every 4 words
+            }
+        }
+
+        println!("\n\nPlease write this down and store it in a safe place.");
     }
 
     Ok(())

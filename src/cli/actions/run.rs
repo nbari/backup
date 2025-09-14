@@ -1,10 +1,10 @@
 use crate::{
     cli::{actions::Action, globals::GlobalArgs},
     utils::{
+        crypto::{encrypt, generate_file_key},
         db::get_public_key,
         format::format_duration,
         hash::blake3,
-        kek::{generate_file_key, kek_wrap},
     },
 };
 use anyhow::{anyhow, Result};
@@ -316,7 +316,7 @@ fn get_or_insert_path(conn: &Connection, path: &str) -> Result<i64> {
 fn get_or_insert_file(conn: &Connection, hash: &str, public_key: PublicKey) -> Result<i64> {
     let file_key = generate_file_key(); // 32 random bytes
 
-    let (wrapped, e_public) = kek_wrap(&file_key, hash, &public_key)?;
+    let (wrapped, e_public) = encrypt(&file_key, &public_key)?;
 
     conn.execute(
         "INSERT OR IGNORE INTO Files (hash, encrypted_key, ephemeral_public_key) VALUES (?1, ?2, ?3)",
