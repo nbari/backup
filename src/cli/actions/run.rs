@@ -1,9 +1,11 @@
 use crate::{
-    cli::{
-        actions::{generate_file_key, get_public_key, kek_wrap, Action},
-        globals::GlobalArgs,
+    cli::{actions::Action, globals::GlobalArgs},
+    utils::{
+        db::get_public_key,
+        format::format_duration,
+        hash::blake3,
+        kek::{generate_file_key, kek_wrap},
     },
-    utils::{format::format_duration, hash::blake3},
 };
 use anyhow::{anyhow, Result};
 use futures::stream::{FuturesUnordered, StreamExt};
