@@ -79,7 +79,11 @@ pub async fn handle(action: Action, globals: GlobalArgs) -> Result<()> {
             get_backup_version(pool.clone())?
         };
 
-        println!("Backup version: {}\n", backup_version);
+        println!(
+            "Backup{} version: {}\n",
+            if dry_run { " (dry-run)" } else { "" },
+            backup_version
+        );
 
         // get the directories to backup
         let directories = get_directories_to_backup(pool.clone())?;
@@ -152,15 +156,19 @@ pub async fn handle(action: Action, globals: GlobalArgs) -> Result<()> {
                 skipped_files_log.display()
             );
         }
+
+        // Get the elapsed time
+        let elapsed = timer.elapsed();
+
+        // Format the elapsed time
+        let formatted_time = format_duration(elapsed);
+
+        println!(
+            "Backup{} completed successfully in: {}.",
+            if dry_run { " (dry-run)" } else { "" },
+            formatted_time
+        );
     }
-
-    // Get the elapsed time
-    let elapsed = timer.elapsed();
-
-    // Format the elapsed time
-    let formatted_time = format_duration(elapsed);
-
-    println!("Backup completed successfully in: {formatted_time}.");
 
     Ok(())
 }
