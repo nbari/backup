@@ -35,7 +35,9 @@ Three choices define it:
   tamper, reorder, roll back, truncate, or delete what it holds.
 - **Guarantees:** content is unreadable without the mnemonic; the store learns
   only opaque blobs and their count/size distribution; tampering and rollback are
-  detectable (§7).
+  detectable (§7); and **malicious deletion / ransomware** is resisted by an
+  append-only credential + Object Lock, so a compromised backup runner can add
+  but cannot read or destroy history (§7).
 - **Out of scope:** an attacker with code execution on the trusted machine while
   a backup runs (can read the live naming key / mnemonic input). See the
   `.wkey` note in §4.
@@ -133,6 +135,9 @@ catalog + naming key); no round-trip to the store.
   alternative for AES-NI hardware (benchmark ChaCha20 vs AES per platform). The
   content key is **wrapped to the public key** (the same envelope `Files` uses
   today); single-use, so a fixed nonce is safe (XChaCha20-Poly1305 optional).
+  The wrap derives its KEK with HKDF binding **`ephemeral_pub ‖ recipient_pub`**
+  into the `info` (sealed-box best practice): it ties the key to that exact
+  ephemeral and recipient — tamper-evident, and collision-free across recipients.
 - **Multiple recipients (planned):** the content key may be wrapped to **several**
   public keys, so a backup can be recovered by more than one keyholder (org
   escrow, a second admin). Cheap in the asymmetric model — one extra wrapped-key
@@ -152,15 +157,28 @@ diffs, no dependency on other versions. The `Paths`/`FileNames` version-interval
 model is unchanged; only "a file's content" now resolves to a manifest instead
 of a single hash.
 
-### 6.5 Storage trait, layout & packs (#3, #8)
+### 6.5 Storage trait, backends & packs (#3, #8)
 ```
 trait Storage { put(key,bytes); get(key[,range]); exists(key); delete(key); list(prefix); }
 ```
-- **Local backend:** sharded dir (`blobs/ab/cd/<id>`), temp-file + atomic rename
-  — the "distributed tree" of #3.
-- **S3 backend:** pack objects; multipart for large packs. A FUSE option via
-  [mountpoint-s3](https://github.com/awslabs/mountpoint-s3) can be considered for
-  mounting, but the native object API is the primary path.
+A backup has one or more **destinations** (§6.7, #19), each one of two backends:
+
+- **Filesystem backend (a universal adapter).** Writes packs/blobs to a
+  configured path (sharded tree, temp-file + atomic rename) — the "distributed
+  tree" of #3. Because the target is just a path, this **transparently covers**
+  NFS, external/removable drives, and any FUSE/userspace mount — `s3fs`, `rclone
+  mount`, **Cryptomator**, Dropbox/Drive folders — with no backend-specific code.
+- **S3 backend via [`s3m`](https://github.com/s3m/s3m).** Depend on the `s3m`
+  crate's `s3` client (its own reqwest+rustls+ring-signed implementation) for a
+  **vendor-agnostic** native S3 path — AWS, MinIO, Backblaze B2, Wasabi, Ceph
+  RGW, Cloudflare R2, anything S3-compatible via a configurable endpoint/region —
+  with **resumable multipart** uploads. `backup` hands it **already
+  compressed+encrypted** packs, so `s3m` is the **transport only**; `backup` owns
+  the crypto (no double-encryption). Reuse `s3m`'s host/credentials config model
+  for destinations (§6.7). Integration is in-process via the library (same
+  author, dependency stack, lints, and edition → low friction); confirm the exact
+  `s3m::s3` API surface at implementation.
+
 - **Packs (object store):** chunks are aggregated into **pack objects**
   (~16–128 MiB) with an index, to avoid huge object counts (S3 request
   cost/throttling). A blob index maps `chunk_id → (pack_id, offset, length)`,
@@ -181,11 +199,13 @@ trait Storage { put(key,bytes); get(key[,range]); exists(key); delete(key); list
 - `Files(file_id PK, manifest_id UNIQUE, whole_hash, size)` — content identity is
   the manifest (keyed hash of the ordered chunk-id list).
 - `FileChunks(file_id, seq, chunk_id, PRIMARY KEY(file_id, seq))` — the ordered recipe.
-- **Entry attributes (A):** per-version entry **type** (file / dir / symlink /
-  special), **mode**, **uid/gid**, **mtime**, and **symlink target** — on
-  `FileNames` or a sibling `EntryMeta` table — so restore reproduces permissions,
-  ownership, timestamps, **empty directories**, and symlinks. Hardlinks recorded
-  by (device, inode) so they re-link instead of duplicating.
+- **`Entries` table (A):** an entry has a **`type`** (file / dir / symlink /
+  special) and an **optional `manifest_id`** (regular files only — dirs, symlinks
+  and specials have no content). Each entry also carries **mode, uid/gid, mtime**,
+  and a **symlink target**, so restore reproduces permissions, ownership,
+  timestamps, **empty directories**, and symlinks — not just files-with-bytes.
+  Hardlinks recorded by (device, inode) so they re-link instead of duplicating.
+  (Generalizes today's `FileNames → file_id`, which assumed every entry had content.)
 - `Packs(pack_id, object_key, size, …)`.
 - Per-version chunk reference counts for prune (§8); a `Config` format-version marker.
 - A per-file **stat signature** (size, mtime, inode/ctime) for fast stat-based
@@ -222,18 +242,24 @@ happen here, **not** at `run`.
   bytes **as read now**, records their real content id, and flags the entry
   `changed-during-backup` (the next run reconciles); a vanished file is skipped.
   The run never fails on a moving file.
-- **Guarantee:** **per-file** consistency (each file captured as one coherent
-  read, verified against its signature) — **not** cross-file atomicity (OS
-  snapshots are intentionally avoided). Apps needing a consistent multi-file
-  image (e.g. a live database) should dump/quiesce first. An optional `--verify`
-  mode re-hashes instead of trusting `stat`, for the rare "content changed but
-  mtime didn't" case.
-- **Destinations & credentials (C):** each backup's destinations (S3
-  endpoint/bucket/region/prefix, mount paths) are configured in the catalog
-  `Config`; **credentials are never stored in the catalog** — they come from the
-  environment / AWS profile / IAM role.
-- A **version is sealed** only once all its chunks are uploaded+verified to the
-  destination(s); until then it is pending.
+- **Guarantee (precise):** the stored object is **exactly the bytes that were
+  read, proven by their checksum** — *not* a guarantee of a logically valid file
+  state. A file rewritten in place during the read can be captured as a torn
+  old+new mix; the blob is still self-consistent (it hashes to its recorded id),
+  but may not be a sane file. This is **per-file**, never **cross-file**
+  atomicity (OS snapshots are intentionally avoided). For logical consistency
+  (e.g. a live database) dump/quiesce first. An optional `--verify` mode re-hashes
+  instead of trusting `stat`.
+- **Destinations & credentials (C):** each backup has one or more destinations
+  (§6.5) — filesystem paths (mounts, drives, FUSE) and/or S3 targets — configured
+  per backup. Filesystem destinations are just paths; S3 destinations reuse
+  `s3m`'s host config (endpoint/region/bucket/prefix). **Credentials are never
+  stored in the catalog** — they come from the environment / `s3m`'s config /
+  profile / IAM role.
+- A **version is sealed per destination** — restorable from a destination only
+  once **all its chunks have landed there**. With several destinations, S3 may be
+  sealed while a mount still lags; "can I restore v7 from X?" is answered
+  per-destination, so seal state is tracked per `(version, destination)`.
 
 ### 6.8 File metadata, directories & special types (A)
 A faithful restore needs more than bytes:
@@ -251,17 +277,27 @@ A faithful restore needs more than bytes:
 ## 7. Zero-knowledge store & integrity
 
 - The store holds **only**: opaque pack/large-file objects, an **encrypted
-  catalog/manifest** (sealed to the public key) for disaster recovery, and a
-  signed manifest. It never sees plaintext paths/names.
+  catalog** (sealed to the public key) for disaster recovery, and a signed
+  manifest. It never sees plaintext paths/names.
 - The local plaintext catalog is the browsable map; the encrypted copy on the
   store is what a fresh machine restores from (mnemonic + store → rebuild).
-- **Store layout:** well-known keys so a fresh client can bootstrap — an
-  encrypted catalog object, the latest manifest, and a `packs/` prefix. DR =
-  fetch manifest + encrypted catalog → decrypt with the mnemonic → restore.
-- **Hosted-catalog hook (#6):** because the uploaded `<name>.db` is sealed to the
-  public key, a hosting service can store customers' catalogs (and blobs) without
-  ever seeing their data — a natural paid offering with no change to the trust
-  model.
+- **Catalog upload is automatic and keyless.** The catalog is a *critical
+  dependency* — blobs are unrecoverable without it — so at the end of every
+  successful run/upload the `<name>.db` is **sealed to the public key and pushed
+  automatically to every configured destination** (no separate command, no
+  operator action to forget) — so the catalog inherits the multi-destination
+  redundancy of #19 for free. Sealing needs no secret, so a cron/write-only host
+  can do it; only **pulling it back** for DR needs the mnemonic. The local
+  `.wkey` is **never** uploaded. **At scale, don't re-upload the whole `.db`
+  every run** (it holds every chunk id and can grow large): ship the delta
+  (changed SQLite pages / WAL), or split a small **per-run manifest** (pushed
+  every run) from the large **chunk index** (synced incrementally).
+- **Store layout:** well-known keys so a fresh client can bootstrap — the sealed
+  catalog object, the latest manifest, and a `packs/` prefix. DR = fetch manifest
+  + sealed catalog → decrypt with the mnemonic → restore.
+- Because the uploaded `<name>.db` is **sealed to the public key**, it can live on
+  any untrusted third party (not just the blob store) without exposing data —
+  useful for off-site/redundant copies, with no change to the trust model.
 - **Manifest authenticity & rollback (corrected):** each run writes a manifest
   (Merkle root over chunk ids + file-manifest ids + a monotonic version). The
   host holds only the public key, so it **cannot sign or compute a
@@ -273,6 +309,16 @@ A faithful restore needs more than bytes:
   and refuses an older one), since a MAC alone can't stop replay of an old
   genuine manifest. A fresh DR client has no local state, so it authenticates via
   the MAC and trusts the store's latest on first use.
+- **Append-only / immutability (ransomware defense).** The data model is
+  already append-only *by construction* (content-addressed blobs are only ever
+  added, never overwritten). Enforce it at the storage layer so a *compromised*
+  client can't erase history, not just a well-behaved one: the routine backup
+  credential is **write-but-not-delete** (e.g. S3 `PutObject` allowed,
+  `DeleteObject` denied), ideally with **Object Lock (WORM) + versioning** so
+  even overwrites are blocked until a retention period expires. This pairs with
+  the write-only host: a compromised cron host can then neither **read** (public
+  key only) nor **delete** — it can only add. Deletion is therefore *not* a
+  routine-client capability (see `prune`, §8).
 - Inherent leak (all dedup tools): the store sees **chunk count and size
   distribution**.
 
@@ -283,8 +329,10 @@ A faithful restore needs more than bytes:
   ids) → fetch each chunk (pack range or object) → unwrap its content key with
   the mnemonic → decrypt → decompress → concatenate in order → verify the
   whole-file digest → write to `--into <root>` (restore to a defined root, #3)
-  or the original path, then **re-apply attributes** (§6.8). Selection by
-  id/path/version already exists in `view`.
+  or the original path. **Restore order matters:** create **dirs first** → write
+  file contents (temp + rename) → create **symlinks** → link **hardlinks** to
+  already-restored targets → apply **mode/owner** → set **mtime last** (writing
+  resets it). Selection by id/path/version already exists in `view`.
 - **Verify / check (B):** `verify [--deep] [--repair]` — confirm referenced
   chunks/packs exist on each destination (cheap), optionally re-download and
   re-hash (deep), and reconcile catalog↔store drift (e.g. catalog says uploaded
@@ -295,7 +343,10 @@ A faithful restore needs more than bytes:
 - **Prune + retention (C):** reference-count chunks by version; `prune` applies a
   **GFS-style retention policy** (keep last N; hourly/daily/weekly/monthly/yearly;
   keep-within a duration), then mark-and-sweeps unreferenced chunks and repacks
-  packs to reclaim space.
+  packs to reclaim space. Because `prune` **deletes**, it must run on a
+  **separate, privileged path** — a delete-capable credential used from a trusted
+  admin context, *not* the append-only backup credential (§7) — or rely on Object
+  Lock retention expiry. The routine, always-exposed backup runner never deletes.
 - **Locking (B):** a catalog lock prevents concurrent `run`/`prune` on the same
   backup from corrupting state.
 
@@ -305,6 +356,16 @@ A faithful restore needs more than bytes:
   records filesystem changes continuously and digests them on a schedule/priority
   (vs. today's on-demand `run`). A future operational mode on top of the same
   data plane.
+- **Extensible catalog visibility (future):** the catalog is
+  encrypted-by-default (zero-knowledge). Leave room for an optional
+  **metadata-only view key** — a capability that unlocks the *map* (paths/names)
+  without granting content access (content stays mnemonic-only) — and for an
+  opt-in plaintext catalog where a remote browse UI is wanted.
+  **Forward-compatibility (avoid a breaking change):** keep the uploaded catalog
+  in a **versioned, tagged envelope** (the `Config` format marker, §6.6), and
+  make any view key a new **HKDF-labeled** subkey of the mnemonic seed (like the
+  naming key). Then encrypted / view-key / plaintext modes are interchangeable
+  later with no on-disk or wire-format break.
 - **Nice-to-have (later):** snapshot tags/labels (name a version "pre-upgrade")
   alongside numeric versions; upload throttling, retry/backoff and parallelism
   knobs; S3 storage-class / lifecycle (cold tiers); and fixing the pre-existing
@@ -318,19 +379,62 @@ A faithful restore needs more than bytes:
   an active local-root adversary).
 - **Non-goal — encrypting path/name columns** (kept plaintext locally for the map).
 
-## 10. Current status
+## 10. Status & implementation checklist
 
-Built: metadata engine, keyed ids, versioning, key management (sealed naming key
-+ `.wkey`), `new`/`edit`/`run`/`show`/`view`, `restore` placeholder.
-Not built: chunking (FastCDC; a single-chunk/whole-file chunker is an acceptable
-first step), file manifests, compression, content encryption of chunk bytes,
-blob/pack storage, local & S3 backends, encrypted catalog/manifest upload,
-manifest TAM, restore, prune.
+Tick items as they land. Phases are ordered to exercise the whole pipeline with
+the least risk; nothing in a later phase blocks an earlier one.
 
-Note — behavior change from today: the current `run` hashes file content during
-the scan. The target model (§6.7) makes `run` **metadata-only** (stat-based
-change detection) and moves content hashing/CDC/dedup into the upload phase, so
-each changed file is read once. This refactor lands with the data plane.
+### Done
+- [x] Metadata engine: scan, version intervals, restore-metadata queries
+- [x] Keyed-BLAKE3 content identifiers
+- [x] Key management: mnemonic → X25519, sealed naming key, `.wkey` cache
+- [x] Per-file content key generated + wrapped to the public key
+- [x] Commands: `new`, `edit`, `run` (metadata scan), `show`, `view`/`browse` (+ file ids)
+- [x] `restore` command wired as a placeholder
+
+### Phase 1 — local content round-trip
+- [ ] `run` refactor: metadata-only, stat-based change detection (§6.7)
+- [ ] File metadata capture: mode/uid/gid/mtime, symlinks (not followed), empty
+      dirs, special files, hardlinks (§6.8)
+- [ ] Compression: zstd + codec tag (§6.3)
+- [ ] Per-chunk encryption: ChaCha20-Poly1305, tags bound as AAD, HKDF wrap binds
+      ephemeral+recipient pubkeys (§6.3)
+- [ ] Local `Storage` backend (sharded blobs, temp+rename) (§6.5)
+- [ ] `restore` (real): manifest → fetch → decrypt → decompress → verify →
+      write + re-apply attributes (§8)
+- [ ] Catalog lock against concurrent `run`/`prune` (§8)
+
+### Phase 2 — chunking & packs
+- [ ] FastCDC chunking + file manifests (`FileChunks`) (§6.1, §6.4)
+- [ ] Schema migration: `Chunks` / `ChunkKeys` / manifest `Files` / `Entries` table (§6.6)
+- [ ] Pack files + index (§6.5)
+
+### Phase 3 — remote & redundancy
+- [ ] Filesystem backend (path/mount/FUSE: NFS, drives, s3fs, Cryptomator) (§6.5)
+- [ ] S3 backend via `s3m` (vendor-agnostic, resumable multipart) (§6.5)
+- [ ] Multi-destination upload + resumable state machine, per-destination sealing (§6.7, #19)
+- [ ] Streaming + scratch/buffer dir (§6.5, #8)
+- [ ] Destinations config + credential sourcing (§6.7)
+- [ ] Append-only credential + Object Lock/WORM support (ransomware defense) (§7)
+- [ ] `status` command (§8)
+- [ ] Automatic sealed-catalog upload (incremental, not whole-`.db`) + store layout / DR pull (§7)
+
+### Phase 4 — integrity & lifecycle
+- [ ] Manifest MAC (naming-key) + local rollback state (§7)
+- [ ] `verify`/`check` (`--deep` / `--repair`) (§8)
+- [ ] `prune` + GFS retention policy, on a separate delete-capable credential (§8)
+
+### Phase 5 — nice-to-have / later
+- [ ] Multi-recipient encryption (§6.3)
+- [ ] Async `watch` mode (§9, #6)
+- [ ] Snapshot tags/labels (§9)
+- [ ] Upload throttling / retry-backoff / parallelism; S3 storage classes (§9)
+- [ ] AES-256-GCM cipher option (§6.3)
+- [ ] Fix `-c/--config` (currently ignored by `run`/`view`/`edit`) (§9)
+
+> Note — behavior change in Phase 1: today's `run` hashes file content during the
+> scan. The target (§6.7) makes `run` metadata-only and moves
+> hashing/CDC/dedup into the upload phase, so each changed file is read once.
 
 ## 11. Issue backlog mapping
 
@@ -342,7 +446,7 @@ This document consolidates the early design issues; each maps to a section here.
 | #3 | backup layout / restore-to-root / distributed tree | §6.5, §8 | decided |
 | #4 | ChaCha20-Poly1305 default, AES-256 fallback, chunk encrypt | §6.3 | decided |
 | #5 | zstd compression (xz optional) | §6.3 | decided |
-| #6 | track changes async + hosted encrypted catalog | §9 (watch), §7 (hosting) | designed / future |
+| #6 | async change tracking (watch mode) | §9 | future |
 | #8 | streaming to S3, buffer dir, split size | §6.5, §6.7 | designed |
 | #18 | list files with id to restore | `view`/`browse` | **implemented** |
 | #19 | back up to multiple locations (S3 + mount) | §6.7 | designed |
