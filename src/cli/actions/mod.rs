@@ -1,6 +1,7 @@
 pub mod new;
 pub mod run;
 pub mod show;
+pub mod view;
 
 use std::path::PathBuf;
 
@@ -20,5 +21,10 @@ pub enum Action {
         no_compression: bool,
         no_encryption: bool,
         dry_run: bool,
+    },
+    View {
+        name: String,
+        depth: usize,
+        version: Option<i64>,
     },
 }

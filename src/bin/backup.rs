@@ -12,6 +12,7 @@ async fn main() -> Result<()> {
         Action::New { .. } => actions::new::handle(action)?,
         Action::Show => actions::show::handle(&globals)?,
         Action::Run { .. } => actions::run::handle(action, globals).await?,
+        Action::View { .. } => actions::view::handle(action, &globals)?,
     }
 
     Ok(())

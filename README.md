@@ -70,6 +70,22 @@ Show configured backups:
 backup show
 ```
 
+Browse the backed-up file tree of a snapshot (alias: `browse`):
+
+```bash
+backup view mybackup
+```
+
+`view` reads the versioned metadata and prints the actual captured file tree.
+By default it shows the latest snapshot to a depth of 2, annotating deeper
+directories with their file count. Use `--depth N` (`0` for the full tree) and
+`--version V` to change what is shown:
+
+```bash
+backup view mybackup --depth 0          # full tree
+backup view mybackup --version 3        # an older snapshot
+```
+
 Metadata is stored in SQLite under `~/.backup/<name>.db`, with the naming-key
 cache alongside it as `~/.backup/<name>.wkey`. Scan errors and skipped entries
 are written to `~/.backup/<name>-skipped_files.log` when needed.

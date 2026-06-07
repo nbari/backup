@@ -2,6 +2,7 @@ pub mod cmd_edit;
 pub mod cmd_new;
 pub mod cmd_run;
 pub mod cmd_show;
+pub mod cmd_view;
 
 use clap::{
     Arg, ColorChoice, Command,
@@ -43,6 +44,7 @@ pub fn new(config_path: PathBuf) -> Command {
         .subcommand(cmd_new::command())
         .subcommand(cmd_run::command())
         .subcommand(cmd_show::command())
+        .subcommand(cmd_view::command())
 }
 
 #[cfg(test)]

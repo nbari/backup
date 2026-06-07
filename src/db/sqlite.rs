@@ -3,7 +3,7 @@ use anyhow::{Result, anyhow};
 use base64::{Engine as _, engine::general_purpose};
 use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 use std::{
     cmp,
     path::{Path, PathBuf},
@@ -248,6 +248,39 @@ impl SqliteCatalog {
     pub fn restore_entries(&self, version: i64) -> Result<Vec<RestoreEntry>> {
         let conn = self.pool.get()?;
         restore_entries(&conn, version)
+    }
+
+    /// Return the most recent backup version, or `None` if no runs are recorded.
+    ///
+    /// # Errors
+    /// Returns an error if the version metadata cannot be read.
+    pub fn latest_version(&self) -> Result<Option<i64>> {
+        let conn = self.pool.get()?;
+
+        Ok(
+            conn.query_row("SELECT MAX(version_id) FROM BackupVersions", [], |row| {
+                row.get::<_, Option<i64>>(0)
+            })?,
+        )
+    }
+
+    /// Return the unix timestamp (seconds) a version was recorded.
+    ///
+    /// # Errors
+    /// Returns an error if the version metadata cannot be read.
+    pub fn version_timestamp(&self, version: i64) -> Result<Option<i64>> {
+        let conn = self.pool.get()?;
+
+        let timestamp = conn
+            .query_row(
+                "SELECT timestamp FROM BackupVersions WHERE version_id = ?1",
+                params![version],
+                |row| row.get::<_, Option<i64>>(0),
+            )
+            .optional()?
+            .flatten();
+
+        Ok(timestamp)
     }
 
     /// Count rows in a table.

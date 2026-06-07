@@ -1,6 +1,7 @@
 pub mod cmd_new;
 pub mod cmd_run;
 pub mod cmd_show;
+pub mod cmd_view;
 
 use crate::cli::actions::Action;
 use anyhow::{Context, Result, anyhow};
@@ -20,6 +21,7 @@ pub fn handler(matches: &clap::ArgMatches) -> Result<Action> {
         Some("new") => cmd_new::dispatch(get_subcommand_matches(matches, "new")?),
         Some("show") => Ok(cmd_show::dispatch()),
         Some("run") => cmd_run::dispatch(get_subcommand_matches(matches, "run")?),
+        Some("view") => cmd_view::dispatch(get_subcommand_matches(matches, "view")?),
 
         _ => Err(anyhow!("Unsupported command")),
     }
