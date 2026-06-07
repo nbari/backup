@@ -60,6 +60,7 @@ num_cpus = "1.17"
 r2d2 = "0.8.10"
 r2d2_sqlite = "0.31.0"
 rand = "0.9.4"
+rpassword = "7"
 rusqlite = { version = "0.37", features = ["bundled", "unlock_notify"] }
 sha2 = "0.10.9"
 tempfile = "3.27"
@@ -67,6 +68,7 @@ tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 x25519-dalek = { version = "2.0.1", features = ["getrandom", "static_secrets"] }
+zeroize = "1"
 
 [package.metadata.generate-rpm]
 assets = [

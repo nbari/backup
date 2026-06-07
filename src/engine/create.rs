@@ -1,9 +1,12 @@
-use crate::db::sqlite::SqliteCatalog;
+use crate::{
+    db::sqlite::SqliteCatalog,
+    engine::wkey,
+    utils::crypto::{content_keypair, generate_naming_key, seal_naming_key},
+};
 use anyhow::{Result, anyhow};
 use bip39::{Language, Mnemonic};
 use std::path::PathBuf;
 use tracing::debug;
-use x25519_dalek::StaticSecret;
 
 pub struct CreateBackupRequest {
     pub name: String,
@@ -34,20 +37,18 @@ pub fn create(request: CreateBackupRequest) -> Result<CreateBackupResult> {
     let catalog = SqliteCatalog::initialize(&db_path)?;
 
     let mnemonic = Mnemonic::generate_in(Language::English, 12)?;
-    let seed = mnemonic.to_seed("");
-
-    let mut seed_bytes = [0u8; 32];
-    let seed_prefix = seed
-        .get(..32)
-        .ok_or_else(|| anyhow!("Mnemonic seed is too short"))?;
-    seed_bytes.copy_from_slice(seed_prefix);
-
-    let private_key = StaticSecret::from(seed_bytes);
-    let public_key = x25519_dalek::PublicKey::from(&private_key);
+    let (_, public_key) = content_keypair(&mnemonic)?;
 
     debug!("Public Key: {:?}", hex::encode(public_key.as_bytes()));
 
     catalog.save_public_key(&public_key)?;
+
+    // Generate the naming key, seal it to the public key for at-rest recovery,
+    // and cache the plaintext in {name}.wkey so cron runs stay unattended.
+    let naming_key = generate_naming_key();
+    let sealed = seal_naming_key(&naming_key, &public_key)?;
+    catalog.save_sealed_naming_key(&sealed)?;
+    wkey::write_naming_key(&request.config_dir, &request.name, &naming_key)?;
 
     let backup_dirs = get_unique_dir_parents(request.directories);
     catalog.save_directories(&backup_dirs)?;
@@ -75,6 +76,36 @@ fn get_unique_dir_parents(mut dirs: Vec<PathBuf>) -> Vec<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::utils::crypto::unseal_naming_key;
+
+    #[test]
+    fn create_writes_wkey_and_naming_key_recovers_from_mnemonic() -> Result<()> {
+        let temp_dir = tempfile::tempdir()?;
+        let name = "demo";
+
+        let result = create(CreateBackupRequest {
+            name: name.to_string(),
+            config_dir: temp_dir.path().to_path_buf(),
+            directories: Vec::new(),
+            files: Vec::new(),
+        })?;
+
+        // The cache exists after create and holds a 32-byte naming key.
+        let cached = wkey::load_naming_key(temp_dir.path(), name)?
+            .ok_or_else(|| anyhow!("wkey cache should exist after create"))?;
+
+        // Simulate a fresh machine: drop the cache and recover from .db + mnemonic.
+        std::fs::remove_file(wkey::wkey_path(temp_dir.path(), name))?;
+        assert!(wkey::load_naming_key(temp_dir.path(), name)?.is_none());
+
+        let mnemonic = Mnemonic::parse_in_normalized(Language::English, &result.recovery_phrase)?;
+        let catalog = SqliteCatalog::open(&result.db_path)?;
+        let recovered = unseal_naming_key(&catalog.sealed_naming_key()?, &mnemonic)?;
+
+        assert_eq!(*cached, *recovered);
+
+        Ok(())
+    }
 
     #[test]
     fn test_get_unique_dir_parents() {

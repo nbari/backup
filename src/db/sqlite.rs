@@ -79,6 +79,44 @@ impl SqliteCatalog {
         Ok(())
     }
 
+    /// Save the naming key sealed to the backup public key.
+    ///
+    /// The blob is ciphertext (`ephemeral_public_key || wrapped_key`) and can
+    /// only be opened with the recovery mnemonic, so storing it in the catalog
+    /// leaks nothing at rest.
+    ///
+    /// # Errors
+    /// Returns an error if the sealed key cannot be stored.
+    pub fn save_sealed_naming_key(&self, sealed: &[u8]) -> Result<()> {
+        let conn = self.pool.get()?;
+
+        let sealed_b64 = general_purpose::STANDARD.encode(sealed);
+        conn.execute(
+            "INSERT INTO Config (name, value) VALUES ('sealed_naming_key', ?1)",
+            params![sealed_b64],
+        )?;
+
+        Ok(())
+    }
+
+    /// Read the sealed naming key.
+    ///
+    /// # Errors
+    /// Returns an error if the sealed key is missing or cannot be decoded.
+    pub fn sealed_naming_key(&self) -> Result<Vec<u8>> {
+        let conn = self.pool.get()?;
+
+        let sealed_b64: String = conn
+            .query_row(
+                "SELECT value FROM Config WHERE name='sealed_naming_key'",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|err| anyhow!("Sealed naming key not found: {err}"))?;
+
+        Ok(general_purpose::STANDARD.decode(sealed_b64)?)
+    }
+
     /// Save configured backup directories.
     ///
     /// # Errors

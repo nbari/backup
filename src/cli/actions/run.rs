@@ -1,14 +1,21 @@
 use crate::{
     cli::{actions::Action, globals::GlobalArgs},
-    engine::run::{
-        IgnoreRules, ProgressCallback, RunBackupRequest, RunProgress, run, scan_worker_count,
+    db::sqlite::SqliteCatalog,
+    engine::{
+        run::{
+            IgnoreRules, NamingKey, ProgressCallback, RunBackupRequest, RunProgress, run,
+            scan_worker_count,
+        },
+        wkey,
     },
-    utils::format::format_duration,
+    utils::{crypto::unseal_naming_key, format::format_duration},
 };
-use anyhow::Result;
+use anyhow::{Result, anyhow};
+use bip39::{Language, Mnemonic};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use std::{path::Path, sync::Arc, time::Duration};
 use tracing::instrument;
+use zeroize::Zeroizing;
 
 struct RunProgressRenderer {
     multi: MultiProgress,
@@ -136,6 +143,42 @@ fn progress_renderer(quiet: bool) -> Result<Option<RunProgressRenderer>> {
     Ok(Some(RunProgressRenderer::new()?))
 }
 
+/// Resolve the per-backup naming key, prompting for the mnemonic if the cache is
+/// absent.
+///
+/// On the fast path the `{name}.wkey` cache is read directly, so `cron` runs
+/// never prompt. If the cache is missing, the user is asked for the recovery
+/// mnemonic, the naming key is unsealed from the catalog, and the cache is
+/// rewritten. Deleting `{name}.wkey` therefore both forces this prompt and acts
+/// as a self-test that the mnemonic can unlock the backup.
+fn resolve_naming_key(config_dir: &Path, name: &str) -> Result<NamingKey> {
+    if let Some(naming_key) = wkey::load_naming_key(config_dir, name)? {
+        return Ok(Arc::new(naming_key));
+    }
+
+    let db_file = config_dir.join(format!("{name}.db"));
+    if !db_file.exists() {
+        return Err(anyhow!(
+            "No backup named \"{name}\" found. Create a new backup first."
+        ));
+    }
+
+    let sealed = SqliteCatalog::open(&db_file)?.sealed_naming_key()?;
+
+    let phrase = Zeroizing::new(rpassword::prompt_password(format!(
+        "Enter the recovery mnemonic for \"{name}\" to unlock: "
+    ))?);
+    let mnemonic = Mnemonic::parse_in_normalized(Language::English, phrase.trim())
+        .map_err(|_| anyhow!("Invalid recovery mnemonic"))?;
+
+    let naming_key = unseal_naming_key(&sealed, &mnemonic)
+        .map_err(|_| anyhow!("Incorrect mnemonic: could not unlock backup \"{name}\""))?;
+
+    wkey::write_naming_key(config_dir, name, &naming_key)?;
+
+    Ok(Arc::new(naming_key))
+}
+
 /// Handle the run action.
 ///
 /// # Errors
@@ -161,6 +204,11 @@ pub async fn handle(action: Action, globals: GlobalArgs) -> Result<()> {
                 gitignore,
             }
         };
+
+        // Resolve the naming key before rendering progress, since unlocking may
+        // prompt for the mnemonic interactively.
+        let naming_key = resolve_naming_key(&globals.home, &name)?;
+
         let progress = progress_renderer(globals.quiet)?;
         let progress_callback = progress.as_ref().map(RunProgressRenderer::callback);
 
@@ -170,6 +218,7 @@ pub async fn handle(action: Action, globals: GlobalArgs) -> Result<()> {
             ignore_rules,
             dry_run,
             progress: progress_callback,
+            naming_key,
         })
         .await?;
 

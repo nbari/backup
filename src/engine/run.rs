@@ -1,6 +1,6 @@
 use crate::{
     db::sqlite::{ScannedFile, SqliteCatalog},
-    utils::hash::blake3,
+    utils::hash::blake3_keyed,
 };
 use anyhow::{Result, anyhow};
 use futures::stream::{FuturesUnordered, StreamExt};
@@ -16,6 +16,10 @@ use tokio::{
     sync::Semaphore,
 };
 use tracing::{debug, instrument};
+use zeroize::Zeroizing;
+
+/// Per-backup naming key shared across scan workers to key content identifiers.
+pub type NamingKey = Arc<Zeroizing<[u8; 32]>>;
 
 const BACKUP_IGNORE_FILE: &str = ".backupignore";
 
@@ -66,6 +70,7 @@ pub struct RunBackupRequest {
     pub ignore_rules: IgnoreRules,
     pub dry_run: bool,
     pub progress: Option<ProgressCallback>,
+    pub naming_key: NamingKey,
 }
 
 pub struct RunBackupResult {
@@ -125,6 +130,7 @@ pub async fn run(request: RunBackupRequest) -> Result<RunBackupResult> {
         request.ignore_rules,
         request.progress.clone(),
         &skipped_files_log,
+        &request.naming_key,
     )
     .await?;
 
@@ -183,6 +189,7 @@ async fn queue_scan_tasks(
     ignore_rules: IgnoreRules,
     progress: Option<ProgressCallback>,
     skipped_files_log: &Path,
+    naming_key: &NamingKey,
 ) -> Result<QueuedScan> {
     let tasks = FuturesUnordered::new();
     let worker_count = scan_worker_count();
@@ -209,12 +216,14 @@ async fn queue_scan_tasks(
                         let log_file = skipped_files_log.to_path_buf();
                         let progress = progress.clone();
                         let available_workers = available_workers.clone();
+                        let naming_key = naming_key.clone();
 
                         tasks.push(tokio::spawn(async move {
                             let _permit = semaphore.acquire_owned().await?;
                             let worker_id = acquire_worker_id(&available_workers).await?;
                             let result =
-                                process_file(file_path, log_file, progress, worker_id).await;
+                                process_file(file_path, log_file, progress, worker_id, &naming_key)
+                                    .await;
                             release_worker_id(&available_workers, worker_id).await;
 
                             result
@@ -329,6 +338,7 @@ async fn process_file(
     skipped_files_log: PathBuf,
     progress: Option<ProgressCallback>,
     worker_id: usize,
+    naming_key: &NamingKey,
 ) -> Result<Option<ScannedFile>> {
     if let Some(progress) = &progress {
         progress(RunProgress::ProcessingFile {
@@ -337,7 +347,7 @@ async fn process_file(
         });
     }
 
-    let hash = match calculate_hash(file_path.clone()).await {
+    let hash = match calculate_hash(file_path.clone(), naming_key).await {
         Ok(h) => h,
         Err(e) => {
             log_skipped_entry(
@@ -362,9 +372,10 @@ async fn process_file(
     }))
 }
 
-async fn calculate_hash(file_path: PathBuf) -> Result<String> {
+async fn calculate_hash(file_path: PathBuf, naming_key: &NamingKey) -> Result<String> {
     let file_path_clone = file_path.clone();
-    tokio::task::spawn_blocking(move || blake3(&file_path))
+    let naming_key = naming_key.clone();
+    tokio::task::spawn_blocking(move || blake3_keyed(&file_path, &naming_key))
         .await?
         .map_err(|err| {
             let path = file_path_clone.display();
@@ -403,7 +414,7 @@ mod tests {
     use super::*;
     use crate::{
         db::sqlite::{RestoreEntry, SqliteCatalog},
-        utils::crypto::decrypt,
+        utils::crypto::{content_keypair, decrypt, generate_naming_key, seal_naming_key},
     };
     use anyhow::Context;
     use bip39::{Language, Mnemonic};
@@ -454,34 +465,29 @@ mod tests {
 
     fn recovery_keypair() -> Result<(Mnemonic, PublicKey)> {
         let mnemonic = Mnemonic::generate_in(Language::English, 12)?;
-        let seed = mnemonic.to_seed("");
+        let (_, public_key) = content_keypair(&mnemonic)?;
 
-        let mut seed_bytes = [0_u8; 32];
-        let seed_prefix = seed
-            .get(..32)
-            .ok_or_else(|| anyhow!("Mnemonic seed is too short"))?;
-        seed_bytes.copy_from_slice(seed_prefix);
-
-        let private_key = StaticSecret::from(seed_bytes);
-
-        Ok((mnemonic, PublicKey::from(&private_key)))
+        Ok((mnemonic, public_key))
     }
 
-    fn hash_content(content: &str) -> String {
-        ::blake3::hash(content.as_bytes()).to_hex().to_string()
+    fn hash_content(naming_key: &NamingKey, content: &str) -> String {
+        let mut hasher = ::blake3::Hasher::new_keyed(naming_key);
+        hasher.update(content.as_bytes());
+        hasher.finalize().to_hex().to_string()
     }
 
     fn write_test_file(
         expected: &mut BTreeMap<PathBuf, String>,
         path: &Path,
         content: &str,
+        naming_key: &NamingKey,
     ) -> Result<()> {
         let parent = path
             .parent()
             .ok_or_else(|| anyhow!("Test file has no parent directory"))?;
         fs::create_dir_all(parent)?;
         fs::write(path, content)?;
-        expected.insert(path.to_path_buf(), hash_content(content));
+        expected.insert(path.to_path_buf(), hash_content(naming_key, content));
 
         Ok(())
     }
@@ -509,6 +515,7 @@ mod tests {
         label: &'static str,
         expected: &BTreeMap<PathBuf, String>,
         expected_versions: &mut Vec<ExpectedVersion>,
+        naming_key: &NamingKey,
     ) -> Result<()> {
         let result = run(RunBackupRequest {
             name: name.to_string(),
@@ -516,6 +523,7 @@ mod tests {
             ignore_rules: IgnoreRules::backupignore_only(),
             dry_run: false,
             progress: None,
+            naming_key: naming_key.clone(),
         })
         .await?;
         let expected_version = i64::try_from(expected_versions.len() + 1)?;
@@ -604,11 +612,22 @@ mod tests {
         paths: &TestPaths,
         expected: &mut BTreeMap<PathBuf, String>,
         expected_versions: &mut Vec<ExpectedVersion>,
+        naming_key: &NamingKey,
     ) -> Result<()> {
-        write_test_file(expected, &paths.alpha, "alpha original\n")?;
-        write_test_file(expected, &paths.duplicate_a, "same duplicate content\n")?;
-        write_test_file(expected, &paths.duplicate_b, "same duplicate content\n")?;
-        write_test_file(expected, &paths.stable, "stable content\n")?;
+        write_test_file(expected, &paths.alpha, "alpha original\n", naming_key)?;
+        write_test_file(
+            expected,
+            &paths.duplicate_a,
+            "same duplicate content\n",
+            naming_key,
+        )?;
+        write_test_file(
+            expected,
+            &paths.duplicate_b,
+            "same duplicate content\n",
+            naming_key,
+        )?;
+        write_test_file(expected, &paths.stable, "stable content\n", naming_key)?;
 
         run_and_record_expected(
             root,
@@ -616,10 +635,19 @@ mod tests {
             "initial files with duplicate content",
             expected,
             expected_versions,
+            naming_key,
         )
         .await?;
 
-        run_and_record_expected(root, name, "unchanged scan", expected, expected_versions).await
+        run_and_record_expected(
+            root,
+            name,
+            "unchanged scan",
+            expected,
+            expected_versions,
+            naming_key,
+        )
+        .await
     }
 
     async fn record_changed_versions(
@@ -628,9 +656,18 @@ mod tests {
         paths: &TestPaths,
         expected: &mut BTreeMap<PathBuf, String>,
         expected_versions: &mut Vec<ExpectedVersion>,
+        naming_key: &NamingKey,
     ) -> Result<()> {
-        write_test_file(expected, &paths.alpha, "alpha modified\n")?;
-        run_and_record_expected(root, name, "alpha modified", expected, expected_versions).await?;
+        write_test_file(expected, &paths.alpha, "alpha modified\n", naming_key)?;
+        run_and_record_expected(
+            root,
+            name,
+            "alpha modified",
+            expected,
+            expected_versions,
+            naming_key,
+        )
+        .await?;
 
         remove_test_file(expected, &paths.duplicate_b)?;
         run_and_record_expected(
@@ -639,30 +676,56 @@ mod tests {
             "duplicate removed from source-b",
             expected,
             expected_versions,
+            naming_key,
         )
         .await?;
 
-        write_test_file(expected, &paths.new_file, "new file content\n")?;
-        run_and_record_expected(root, name, "new file added", expected, expected_versions).await?;
+        write_test_file(expected, &paths.new_file, "new file content\n", naming_key)?;
+        run_and_record_expected(
+            root,
+            name,
+            "new file added",
+            expected,
+            expected_versions,
+            naming_key,
+        )
+        .await?;
 
-        write_test_file(expected, &paths.duplicate_b, "same duplicate content\n")?;
+        write_test_file(
+            expected,
+            &paths.duplicate_b,
+            "same duplicate content\n",
+            naming_key,
+        )?;
         run_and_record_expected(
             root,
             name,
             "duplicate restored with original content",
             expected,
             expected_versions,
+            naming_key,
         )
         .await?;
 
-        write_test_file(expected, &paths.duplicate_a, "updated duplicate content\n")?;
-        write_test_file(expected, &paths.duplicate_b, "updated duplicate content\n")?;
+        write_test_file(
+            expected,
+            &paths.duplicate_a,
+            "updated duplicate content\n",
+            naming_key,
+        )?;
+        write_test_file(
+            expected,
+            &paths.duplicate_b,
+            "updated duplicate content\n",
+            naming_key,
+        )?;
         run_and_record_expected(
             root,
             name,
             "both duplicates modified to matching content",
             expected,
             expected_versions,
+            naming_key,
         )
         .await
     }
@@ -673,17 +736,27 @@ mod tests {
         paths: &TestPaths,
         expected: &mut BTreeMap<PathBuf, String>,
         expected_versions: &mut Vec<ExpectedVersion>,
+        naming_key: &NamingKey,
     ) -> Result<()> {
         remove_test_file(expected, &paths.alpha)?;
-        run_and_record_expected(root, name, "alpha deleted", expected, expected_versions).await?;
+        run_and_record_expected(
+            root,
+            name,
+            "alpha deleted",
+            expected,
+            expected_versions,
+            naming_key,
+        )
+        .await?;
 
-        write_test_file(expected, &paths.alpha, "alpha original\n")?;
+        write_test_file(expected, &paths.alpha, "alpha original\n", naming_key)?;
         run_and_record_expected(
             root,
             name,
             "alpha restored with original content",
             expected,
             expected_versions,
+            naming_key,
         )
         .await?;
 
@@ -695,6 +768,7 @@ mod tests {
             "both duplicates deleted",
             expected,
             expected_versions,
+            naming_key,
         )
         .await
     }
@@ -706,10 +780,12 @@ mod tests {
         let catalog = SqliteCatalog::initialize(&temp_dir.path().join(format!("{name}.db")))?;
         let paths = TestPaths::new(temp_dir.path());
         let (mnemonic, public_key) = recovery_keypair()?;
+        let naming_key: NamingKey = Arc::new(generate_naming_key());
         let mut expected = BTreeMap::new();
         let mut expected_versions = Vec::new();
 
         catalog.save_public_key(&public_key)?;
+        catalog.save_sealed_naming_key(&seal_naming_key(&naming_key, &public_key)?)?;
         catalog.save_directories(&paths.sources())?;
 
         record_initial_versions(
@@ -718,6 +794,7 @@ mod tests {
             &paths,
             &mut expected,
             &mut expected_versions,
+            &naming_key,
         )
         .await?;
         record_changed_versions(
@@ -726,6 +803,7 @@ mod tests {
             &paths,
             &mut expected,
             &mut expected_versions,
+            &naming_key,
         )
         .await?;
         record_deleted_versions(
@@ -734,6 +812,7 @@ mod tests {
             &paths,
             &mut expected,
             &mut expected_versions,
+            &naming_key,
         )
         .await?;
 
