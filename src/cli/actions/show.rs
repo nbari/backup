@@ -1,80 +1,34 @@
-use crate::cli::globals::GlobalArgs;
-use anyhow::{Result, anyhow};
-use rusqlite::Connection;
-use std::{
-    fs,
-    path::{Path, PathBuf},
-};
+use crate::{cli::globals::GlobalArgs, engine::show::list};
+use anyhow::Result;
+use std::path::PathBuf;
 
-// TODO
-// show backed up files
-/*
-
-retrieve a version
-SELECT Paths.path || '/' || FileNames.name AS full_path
-FROM FileNames
-JOIN Paths ON FileNames.path_id = Paths.path_id
-WHERE first_version <= ?1
-  AND (last_version IS NULL OR last_version >= ?1);
-
-Get only new files after a version
-SELECT Paths.path || '/' || FileNames.name AS full_path
-FROM FileNames
-JOIN Paths ON FileNames.path_id = Paths.path_id
-WHERE first_version = 4
-  AND (last_version IS NULL OR last_version >=4);
-
-
-*/
-
-/// Handle the create action
+/// Handle the show action.
+///
 /// # Errors
 /// Returns an error if backup databases cannot be listed or read.
-pub fn handle(globals: GlobalArgs) -> Result<()> {
-    let home_dir = globals.home;
+pub fn handle(globals: &GlobalArgs) -> Result<()> {
+    let backups = list(&globals.home)?;
 
-    let db_files = get_db_files(&home_dir)?;
-
-    if db_files.is_empty() {
+    if backups.is_empty() {
         println!("No Backup files found.");
         return Ok(());
     }
 
-    let mut db_iter = db_files.iter().peekable();
+    let mut backup_iter = backups.iter().peekable();
 
-    while let Some(db_file) = db_iter.next() {
-        let conn = Connection::open(db_file)?;
+    while let Some(backup) = backup_iter.next() {
+        println!("Backup: {}", backup.name);
 
-        if let Some(file_name) = db_file.file_stem() {
-            // `file_stem` gives the file name without the extension
-            println!("Backup: {}", file_name.to_string_lossy());
+        if !backup.directories.is_empty() {
+            print_tree("Directories", &backup.directories, 2);
         }
 
-        // Fetch paths from config_directories
-        let directories: Vec<String> = conn
-            .prepare("SELECT path FROM config_directories")?
-            .query_map([], |row| row.get(0))?
-            .collect::<Result<_, _>>()?;
-
-        // Fetch paths from config_files
-        let files: Vec<String> = conn
-            .prepare("SELECT path FROM config_files")?
-            .query_map([], |row| row.get(0))?
-            .collect::<Result<_, _>>()?;
-
-        // Print results using tree format
-        if !directories.is_empty() {
-            print_tree("Directories", &directories, 2);
-        }
-
-        if !files.is_empty() {
-            // Print a blank line before files
+        if !backup.files.is_empty() {
             println!();
-            print_tree("Files", &files, 2);
+            print_tree("Files", &backup.files, 2);
         }
 
-        // Print a blank line only if there's a next item
-        if db_iter.peek().is_some() {
+        if backup_iter.peek().is_some() {
             println!();
         }
     }
@@ -82,77 +36,21 @@ pub fn handle(globals: GlobalArgs) -> Result<()> {
     Ok(())
 }
 
-fn print_tree(label: &str, entries: &[String], indent: usize) {
-    // Print the label with formatting
+fn print_tree(label: &str, entries: &[PathBuf], indent: usize) {
     println!("{:indent$}{}:", "", label, indent = indent);
 
     let mut iter = entries.iter().peekable();
 
     while let Some(entry) = iter.next() {
         let is_last = iter.peek().is_none();
-        let prefix = if is_last {
-            "└──" // For the last entry
-        } else {
-            "├──" // For other entries
-        };
+        let prefix = if is_last { "└──" } else { "├──" };
 
-        println!("{:indent$}{} {}", "", prefix, entry, indent = indent);
-    }
-}
-
-fn get_db_files(dir: &Path) -> Result<Vec<PathBuf>> {
-    if !dir.is_dir() {
-        return Err(anyhow!("Directory does not exist"));
-    }
-
-    let mut db_files = Vec::new();
-
-    for entry in fs::read_dir(dir)? {
-        let entry = entry?;
-        let path = entry.path();
-
-        if path.is_file()
-            && let Some(extension) = path.extension()
-            && extension == "db"
-        {
-            db_files.push(path);
-        }
-    }
-
-    Ok(db_files)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use anyhow::Result;
-    use std::fs::File;
-    use tempfile::tempdir;
-
-    #[test]
-    fn test_get_db_files() -> Result<()> {
-        let dir = tempdir()?;
-        let file = dir.path().join("test.db");
-        File::create(&file)?;
-
-        let r = get_db_files(dir.path())?;
-        assert!(!r.is_empty());
-        assert_eq!(r.len(), 1);
-        Ok(())
-    }
-
-    #[test]
-    fn test_get_db_files_no_dir() {
-        let dir = PathBuf::from("/tmp-non-existent");
-        let result = get_db_files(&dir);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_get_db_files_no_files() -> Result<()> {
-        let dir = tempdir()?;
-        let result = get_db_files(dir.path());
-        assert!(result.is_ok());
-        Ok(())
+        println!(
+            "{:indent$}{} {}",
+            "",
+            prefix,
+            entry.display(),
+            indent = indent
+        );
     }
 }

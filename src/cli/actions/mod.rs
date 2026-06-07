@@ -15,7 +15,8 @@ pub enum Action {
     Show,
     Run {
         name: String,
-        no_gitignore: bool,
+        gitignore: bool,
+        no_ignore: bool,
         no_compression: bool,
         no_encryption: bool,
         dry_run: bool,

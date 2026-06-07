@@ -20,16 +20,22 @@ pub fn get_config_path() -> Result<PathBuf> {
 pub fn start() -> Result<(Action, GlobalArgs)> {
     let config_path = get_config_path()?;
 
-    let global_args = GlobalArgs::new(&config_path);
+    let matches = commands::new(config_path.clone()).get_matches();
+    let verbosity = matches.get_count("verbose");
+    let quiet = matches.get_flag("quiet");
 
-    let matches = commands::new(config_path).get_matches();
-
-    let verbosity_level = match matches.get_count("verbose") {
-        0 => None,
-        1 => Some(tracing::Level::INFO),
-        2 => Some(tracing::Level::DEBUG),
-        _ => Some(tracing::Level::TRACE),
+    let verbosity_level = if quiet {
+        None
+    } else {
+        match verbosity {
+            0 => None,
+            1 => Some(tracing::Level::INFO),
+            2 => Some(tracing::Level::DEBUG),
+            _ => Some(tracing::Level::TRACE),
+        }
     };
+
+    let global_args = GlobalArgs::new(&config_path, verbosity, quiet);
 
     telemetry::init(verbosity_level)?;
     let action = handler(&matches)?;

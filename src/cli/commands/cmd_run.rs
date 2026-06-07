@@ -1,4 +1,4 @@
-use clap::{Arg, Command, builder::NonEmptyStringValueParser};
+use clap::{Arg, ArgAction, Command, builder::NonEmptyStringValueParser};
 
 pub fn command() -> Command {
     Command::new("run")
@@ -10,28 +10,36 @@ pub fn command() -> Command {
                 .required(true),
         )
         .arg(
-            Arg::new("no-gitignore")
-                .long("no-gitignore")
-                .help("Ignore parsing .gitignore files in the backup directory")
-                .num_args(0),
+            Arg::new("gitignore")
+                .long("gitignore")
+                .help("Also apply .gitignore rules while scanning")
+                .conflicts_with("no-ignore")
+                .action(ArgAction::SetTrue),
+        )
+        .arg(
+            Arg::new("no-ignore")
+                .long("no-ignore")
+                .help("Do not apply .backupignore or .gitignore rules")
+                .conflicts_with("gitignore")
+                .action(ArgAction::SetTrue),
         )
         .arg(
             Arg::new("no-compression")
                 .long("no-compression")
                 .help("Do not compress the backup")
-                .num_args(0),
+                .action(ArgAction::SetTrue),
         )
         .arg(
             Arg::new("no-encryption")
                 .long("no-encryption")
                 .help("Do not encrypt the backup")
-                .num_args(0),
+                .action(ArgAction::SetTrue),
         )
         .arg(
             Arg::new("dry-run")
                 .long("dry-run")
                 .help("Do not create the backup, only show what would be done")
-                .num_args(0),
+                .action(ArgAction::SetTrue),
         )
 }
 
@@ -51,10 +59,8 @@ mod tests {
             matches.get_one::<String>("name").map(String::as_str),
             Some("test")
         );
-        assert_eq!(
-            matches.get_one::<bool>("no-gitignore").copied(),
-            Some(false)
-        );
+        assert_eq!(matches.get_one::<bool>("gitignore").copied(), Some(false));
+        assert_eq!(matches.get_one::<bool>("no-ignore").copied(), Some(false));
         assert_eq!(
             matches.get_one::<bool>("no-compression").copied(),
             Some(false)
@@ -68,13 +74,35 @@ mod tests {
     }
 
     #[test]
-    fn test_argumets_no_gitignore() -> Result<()> {
-        let matches = matches_for(&["run", "test", "--no-gitignore"])?;
+    fn test_argumets_gitignore() -> Result<()> {
+        let matches = matches_for(&["run", "test", "--gitignore"])?;
         assert_eq!(
             matches.get_one::<String>("name").map(String::as_str),
             Some("test")
         );
-        assert_eq!(matches.get_one::<bool>("no-gitignore").copied(), Some(true));
+        assert_eq!(matches.get_one::<bool>("gitignore").copied(), Some(true));
+        assert_eq!(matches.get_one::<bool>("no-ignore").copied(), Some(false));
+        assert_eq!(
+            matches.get_one::<bool>("no-compression").copied(),
+            Some(false)
+        );
+        assert_eq!(
+            matches.get_one::<bool>("no-encryption").copied(),
+            Some(false)
+        );
+        assert_eq!(matches.get_one::<bool>("dry-run").copied(), Some(false));
+        Ok(())
+    }
+
+    #[test]
+    fn test_argumets_no_ignore() -> Result<()> {
+        let matches = matches_for(&["run", "test", "--no-ignore"])?;
+        assert_eq!(
+            matches.get_one::<String>("name").map(String::as_str),
+            Some("test")
+        );
+        assert_eq!(matches.get_one::<bool>("gitignore").copied(), Some(false));
+        assert_eq!(matches.get_one::<bool>("no-ignore").copied(), Some(true));
         assert_eq!(
             matches.get_one::<bool>("no-compression").copied(),
             Some(false)
@@ -94,10 +122,8 @@ mod tests {
             matches.get_one::<String>("name").map(String::as_str),
             Some("test")
         );
-        assert_eq!(
-            matches.get_one::<bool>("no-gitignore").copied(),
-            Some(false)
-        );
+        assert_eq!(matches.get_one::<bool>("gitignore").copied(), Some(false));
+        assert_eq!(matches.get_one::<bool>("no-ignore").copied(), Some(false));
         assert_eq!(
             matches.get_one::<bool>("no-compression").copied(),
             Some(true)
@@ -117,10 +143,8 @@ mod tests {
             matches.get_one::<String>("name").map(String::as_str),
             Some("test")
         );
-        assert_eq!(
-            matches.get_one::<bool>("no-gitignore").copied(),
-            Some(false)
-        );
+        assert_eq!(matches.get_one::<bool>("gitignore").copied(), Some(false));
+        assert_eq!(matches.get_one::<bool>("no-ignore").copied(), Some(false));
         assert_eq!(
             matches.get_one::<bool>("no-compression").copied(),
             Some(false)
@@ -140,10 +164,8 @@ mod tests {
             matches.get_one::<String>("name").map(String::as_str),
             Some("test")
         );
-        assert_eq!(
-            matches.get_one::<bool>("no-gitignore").copied(),
-            Some(false)
-        );
+        assert_eq!(matches.get_one::<bool>("gitignore").copied(), Some(false));
+        assert_eq!(matches.get_one::<bool>("no-ignore").copied(), Some(false));
         assert_eq!(
             matches.get_one::<bool>("no-compression").copied(),
             Some(false)
@@ -161,7 +183,7 @@ mod tests {
         let matches = matches_for(&[
             "run",
             "test",
-            "--no-gitignore",
+            "--gitignore",
             "--no-compression",
             "--no-encryption",
             "--dry-run",
@@ -170,7 +192,8 @@ mod tests {
             matches.get_one::<String>("name").map(String::as_str),
             Some("test")
         );
-        assert_eq!(matches.get_one::<bool>("no-gitignore").copied(), Some(true));
+        assert_eq!(matches.get_one::<bool>("gitignore").copied(), Some(true));
+        assert_eq!(matches.get_one::<bool>("no-ignore").copied(), Some(false));
         assert_eq!(
             matches.get_one::<bool>("no-compression").copied(),
             Some(true)
@@ -184,13 +207,14 @@ mod tests {
     }
 
     #[test]
-    fn test_argumets_no_gitignore_and_no_compression() -> Result<()> {
-        let matches = matches_for(&["run", "test", "--no-gitignore", "--no-compression"])?;
+    fn test_argumets_no_ignore_and_no_compression() -> Result<()> {
+        let matches = matches_for(&["run", "test", "--no-ignore", "--no-compression"])?;
         assert_eq!(
             matches.get_one::<String>("name").map(String::as_str),
             Some("test")
         );
-        assert_eq!(matches.get_one::<bool>("no-gitignore").copied(), Some(true));
+        assert_eq!(matches.get_one::<bool>("gitignore").copied(), Some(false));
+        assert_eq!(matches.get_one::<bool>("no-ignore").copied(), Some(true));
         assert_eq!(
             matches.get_one::<bool>("no-compression").copied(),
             Some(true)
@@ -204,13 +228,14 @@ mod tests {
     }
 
     #[test]
-    fn test_arguments_no_gitignore_and_no_dry_run() -> Result<()> {
-        let matches = matches_for(&["run", "test", "--no-gitignore", "--dry-run"])?;
+    fn test_arguments_gitignore_and_dry_run() -> Result<()> {
+        let matches = matches_for(&["run", "test", "--gitignore", "--dry-run"])?;
         assert_eq!(
             matches.get_one::<String>("name").map(String::as_str),
             Some("test")
         );
-        assert_eq!(matches.get_one::<bool>("no-gitignore").copied(), Some(true));
+        assert_eq!(matches.get_one::<bool>("gitignore").copied(), Some(true));
+        assert_eq!(matches.get_one::<bool>("no-ignore").copied(), Some(false));
         assert_eq!(
             matches.get_one::<bool>("no-compression").copied(),
             Some(false)
@@ -232,6 +257,12 @@ mod tests {
     #[test]
     fn test_arguments_invalid_name() {
         let m = command().try_get_matches_from(vec!["run", ""]);
+        assert!(m.is_err());
+    }
+
+    #[test]
+    fn test_arguments_gitignore_conflicts_with_no_ignore() {
+        let m = command().try_get_matches_from(vec!["run", "test", "--gitignore", "--no-ignore"]);
         assert!(m.is_err());
     }
 }

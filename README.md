@@ -42,6 +42,10 @@ Run a scan:
 backup run mybackup
 ```
 
+Runs show scan progress by default, including active hashing workers and the
+SQLite metadata write phase. Use `-q` or `--quiet` to suppress progress and
+summary output.
+
 Preview a run without updating metadata:
 
 ```bash
@@ -54,7 +58,34 @@ Show configured backups:
 backup show
 ```
 
-Use `--no-gitignore` to ignore `.gitignore` rules while scanning.
+Metadata is stored in SQLite under `~/.backup/<name>.db`. Scan errors and
+skipped entries are written to `~/.backup/<name>-skipped_files.log` when needed.
+
+## Ignore rules
+
+By default, `backup run` reads `.backupignore` files and uses gitignore-style
+patterns:
+
+```gitignore
+target/
+*.tmp
+node_modules/
+```
+
+The `.backupignore` file itself is included in the scan unless it is explicitly
+ignored.
+
+Use `.gitignore` rules in addition to `.backupignore`:
+
+```bash
+backup run mybackup --gitignore
+```
+
+Disable ignore files completely:
+
+```bash
+backup run mybackup --no-ignore
+```
 
 ## Design direction
 

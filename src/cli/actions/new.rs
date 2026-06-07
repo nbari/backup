@@ -1,13 +1,11 @@
-use crate::{cli::actions::Action, utils::db::create_metadata_schema};
+use crate::{
+    cli::actions::Action,
+    engine::create::{CreateBackupRequest, create},
+};
 use anyhow::Result;
-use base64::{Engine as _, engine::general_purpose::STANDARD};
-use bip39::{Language, Mnemonic};
-use rusqlite::{Connection, params};
-use std::path::{Path, PathBuf};
-use tracing::debug;
-use x25519_dalek::{PublicKey, StaticSecret};
 
-/// Handle the create action
+/// Handle the create action.
+///
 /// # Errors
 /// Returns an error if the backup database cannot be created or initialized.
 pub fn handle(action: Action) -> Result<()> {
@@ -18,242 +16,31 @@ pub fn handle(action: Action) -> Result<()> {
         file,
     } = action
     {
-        let db_path = config.join(format!("{name}.db"));
+        let result = create(CreateBackupRequest {
+            name,
+            config_dir: config,
+            directories: directory.unwrap_or_default(),
+            files: file.unwrap_or_default(),
+        })?;
 
-        // check if file already exists
-        if db_path.exists() {
-            return Err(anyhow::anyhow!(
-                "A backup with the name '{name}' already exists"
-            ));
-        }
-
-        // Create the backup database tables
-        create_metadata_schema(&db_path)?;
-
-        let mnemonic = Mnemonic::generate_in(Language::English, 12)?;
-
-        // Derive the keypair from the mnemonic
-        let seed = mnemonic.to_seed("");
-
-        let mut seed_bytes = [0u8; 32];
-
-        let seed_prefix = seed
-            .get(..32)
-            .ok_or_else(|| anyhow::anyhow!("Mnemonic seed is too short"))?;
-        seed_bytes.copy_from_slice(seed_prefix);
-
-        let private_key = StaticSecret::from(seed_bytes);
-
-        let public_key = PublicKey::from(&private_key);
-
-        debug!("Public Key: {:?}", hex::encode(public_key.as_bytes()));
-
-        // save the public key to the database
-        save_public_key(&db_path, &public_key)?;
-
-        let backup_dirs = get_unique_dir_parents(directory.unwrap_or_default());
-
-        // create the config_directories table
-        create_db_config_direcories_table(&db_path, backup_dirs)?;
-
-        // create the config_files tables
-        // exclude files if they are within the directories that are being backed up
-        create_db_config_files_table(&db_path, file.unwrap_or_default())?;
-
-        // Display the mnemonic to the user
-        let m = mnemonic.to_string();
-
-        let words: Vec<&str> = m.split_whitespace().collect();
-
-        println!("Your recovery phrase is:\n");
-
-        println!("[ {mnemonic} ]\n");
-
-        for (i, word) in words.iter().enumerate() {
-            print!("{:2}. {:12}", i + 1, word);
-            if (i + 1) % 4 == 0 {
-                println!(); // New line every 4 words
-            }
-        }
-
-        println!("\n\nPlease write this down and store it in a safe place.");
+        print_recovery_phrase(&result.recovery_phrase);
     }
 
     Ok(())
 }
 
-fn save_public_key(db_path: &PathBuf, public_key: &PublicKey) -> Result<()> {
-    let conn = Connection::open(db_path)?;
+fn print_recovery_phrase(recovery_phrase: &str) {
+    let words: Vec<&str> = recovery_phrase.split_whitespace().collect();
 
-    let public_key_b64 = STANDARD.encode(public_key.as_bytes());
-    conn.execute(
-        "INSERT INTO Config (name, value) VALUES ('public_key', ?1)",
-        params![public_key_b64],
-    )?;
+    println!("Your recovery phrase is:\n");
+    println!("[ {recovery_phrase} ]\n");
 
-    Ok(())
-}
-
-// extract the parent directory of each path and return only the unique parent directories
-fn get_unique_dir_parents(mut dirs: Vec<PathBuf>) -> Vec<PathBuf> {
-    // Sort the input directories lexicographically (shorter paths come first for easier comparison)
-    dirs.sort();
-
-    // Filter out subdirectories or descendants
-    let mut result = Vec::new();
-    for dir in dirs {
-        // Only add the directory if it is not a descendant of any directory already in the result
-        if !result.iter().any(|parent| dir.starts_with(parent)) {
-            result.push(dir);
+    for (i, word) in words.iter().enumerate() {
+        print!("{:2}. {:12}", i + 1, word);
+        if (i + 1) % 4 == 0 {
+            println!();
         }
     }
 
-    result
-}
-
-fn create_db_config_direcories_table(db_path: &PathBuf, dirs: Vec<PathBuf>) -> Result<()> {
-    let conn = Connection::open(db_path)?;
-
-    // Table to track each backup version
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS config_directories (
-    id INTEGER PRIMARY KEY,
-    path TEXT NOT NULL UNIQUE
-)",
-        [],
-    )?;
-
-    // Prepare the insert statement
-    let mut stmt = conn.prepare("INSERT OR IGNORE INTO config_directories (path) VALUES (?1)")?;
-
-    // Insert each directory into the database
-    for dir in dirs {
-        stmt.execute(params![dir.to_string_lossy().to_string()])?;
-    }
-
-    Ok(())
-}
-
-fn create_db_config_files_table(db_path: &PathBuf, files: Vec<PathBuf>) -> Result<()> {
-    let conn = Connection::open(db_path)?;
-
-    // Table to track each backup version
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS config_files (
-    id INTEGER PRIMARY KEY,
-    path TEXT NOT NULL UNIQUE
-)",
-        [],
-    )?;
-
-    // Prepare the insert statement
-    let mut stmt = conn.prepare("INSERT OR IGNORE INTO config_files (path) VALUES (?1)")?;
-
-    // Get all directory paths from config_directories table
-    let mut dirs_stmt = conn.prepare("SELECT path FROM config_directories")?;
-    let dirs_iter = dirs_stmt.query_map([], |row| row.get::<_, String>(0))?;
-
-    // Collect all directory paths
-    let dirs: Vec<String> = dirs_iter.filter_map(std::result::Result::ok).collect();
-
-    // Insert files only if they are not children of any of the directories
-    for file in files {
-        let file_path = file.to_string_lossy().to_string();
-
-        // Check if file is a child of any of the directories
-        let is_child = dirs.iter().any(|dir| {
-            let dir_path = Path::new(dir);
-            file.starts_with(dir_path)
-        });
-
-        // Only insert file if it is not a child of any directory
-        if !is_child {
-            stmt.execute(params![file_path])?;
-        }
-    }
-
-    Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_get_unique_dir_parents() {
-        let dirs = vec![
-            PathBuf::from("/a/b/c"),
-            PathBuf::from("/a/b/d"),
-            PathBuf::from("/a/b/c/d"),
-            PathBuf::from("/a/b"),
-            PathBuf::from("/b"),
-            PathBuf::from("/b/c"),
-            PathBuf::from("/b/cc"),
-            PathBuf::from("/b/d"),
-        ];
-
-        let result = get_unique_dir_parents(dirs);
-
-        assert_eq!(result.len(), 2);
-        assert!(result.contains(&PathBuf::from("/a/b")));
-        assert!(result.contains(&PathBuf::from("/b")));
-    }
-
-    // test the create_config_directories_table function
-    #[test]
-    fn test_create_db_config_directoris_and_files_table() -> Result<()> {
-        let temp_dir = tempfile::tempdir()?;
-
-        let db_path = temp_dir.path().join("test.db");
-
-        let dirs = vec![
-            PathBuf::from("/a/b/c"),
-            PathBuf::from("/a/b/d"),
-            PathBuf::from("/a/b/c/d"),
-            PathBuf::from("/a/b"),
-            PathBuf::from("/b"),
-            PathBuf::from("/b/c"),
-            PathBuf::from("/b/cc"),
-            PathBuf::from("/b/d"),
-        ];
-
-        create_metadata_schema(&db_path)?;
-
-        let backup_dirs = get_unique_dir_parents(dirs);
-
-        create_db_config_direcories_table(&db_path, backup_dirs)?;
-
-        let conn = Connection::open(&db_path)?;
-
-        let mut stmt = conn.prepare("SELECT path FROM config_directories")?;
-
-        let dirs_iter = stmt.query_map([], |row| row.get::<_, String>(0))?;
-
-        let result: Vec<String> = dirs_iter.filter_map(std::result::Result::ok).collect();
-
-        assert_eq!(result.len(), 2);
-        assert!(result.contains(&"/a/b".to_string()));
-        assert!(result.contains(&"/b".to_string()));
-
-        let files = vec![
-            PathBuf::from("/a/b/c/file1.txt"),
-            PathBuf::from("/a/b/c/d/file2.txt"),
-            PathBuf::from("/a/file3.txt"),
-            PathBuf::from("/z/file4.txt"),
-        ];
-
-        create_db_config_files_table(&db_path, files)?;
-
-        let mut stmt = conn.prepare("SELECT path FROM config_files")?;
-
-        let files_iter = stmt.query_map([], |row| row.get::<_, String>(0))?;
-
-        let result: Vec<String> = files_iter.filter_map(std::result::Result::ok).collect();
-
-        assert_eq!(result.len(), 2);
-        assert!(result.contains(&"/a/file3.txt".to_string()));
-        assert!(result.contains(&"/z/file4.txt".to_string()));
-
-        Ok(())
-    }
+    println!("\n\nPlease write this down and store it in a safe place.");
 }

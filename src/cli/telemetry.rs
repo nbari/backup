@@ -6,21 +6,24 @@ use tracing_subscriber::{EnvFilter, Registry, fmt, layer::SubscriberExt};
 /// # Errors
 /// Will return an error if the telemetry layer fails to start
 pub fn init(verbosity_level: Option<Level>) -> Result<()> {
-    let verbosity_level = verbosity_level.unwrap_or(Level::INFO);
-
     let fmt_layer = fmt::layer()
-        .with_file(true)
-        .with_line_number(true)
+        .without_time()
+        .with_level(false)
+        .with_file(false)
+        .with_line_number(false)
         .with_thread_ids(false)
         .with_thread_names(false)
         .with_target(false)
-        .pretty();
+        .compact();
 
-    // RUST_LOG=
-    let filter = EnvFilter::builder()
-        .with_default_directive(verbosity_level.into())
-        .from_env_lossy()
-        .add_directive("tokio=error".parse()?);
+    let filter = if let Some(verbosity_level) = verbosity_level {
+        EnvFilter::builder()
+            .with_default_directive(verbosity_level.into())
+            .from_env_lossy()
+            .add_directive("tokio=error".parse()?)
+    } else {
+        EnvFilter::try_new("off")?
+    };
 
     let subscriber = Registry::default().with(fmt_layer).with(filter);
 

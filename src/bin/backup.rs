@@ -10,7 +10,7 @@ async fn main() -> Result<()> {
     // Handle the action
     match action {
         Action::New { .. } => actions::new::handle(action)?,
-        Action::Show => actions::show::handle(globals)?,
+        Action::Show => actions::show::handle(&globals)?,
         Action::Run { .. } => actions::run::handle(action, globals).await?,
     }
 

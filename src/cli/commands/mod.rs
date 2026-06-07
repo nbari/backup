@@ -18,7 +18,7 @@ pub fn new(config_path: PathBuf) -> Command {
 
     Command::new("backup")
         .about("Create compressed and encrypted backups")
-        .after_help("Note: To exclude specific files or directories from backups, create a `.gitignore` file in the backup directory and list the patterns of the files or directories to exclude.")
+        .after_help("Note: To exclude specific files or directories from backups, create a `.backupignore` file in the backup directory and list the patterns to exclude.")
         .arg_required_else_help(true)
         .version(env!("CARGO_PKG_VERSION"))
         .color(ColorChoice::Auto)
@@ -37,7 +37,17 @@ pub fn new(config_path: PathBuf) -> Command {
                 .long("verbose")
                 .help("Increase output verbosity (use -vv for more verbosity)")
                 .global(true)
+                .conflicts_with("quiet")
                 .action(clap::ArgAction::Count),
+        )
+        .arg(
+            Arg::new("quiet")
+                .short('q')
+                .long("quiet")
+                .help("Suppress progress and summary output")
+                .global(true)
+                .conflicts_with("verbose")
+                .action(clap::ArgAction::SetTrue),
         )
         .subcommand(cmd_edit::command())
         .subcommand(cmd_new::command())
@@ -69,5 +79,13 @@ mod tests {
         );
 
         Ok(())
+    }
+
+    #[test]
+    fn test_quiet_conflicts_with_verbose() {
+        let result =
+            new(PathBuf::from(".")).try_get_matches_from(vec!["backup", "-q", "-v", "show"]);
+
+        assert!(result.is_err());
     }
 }
