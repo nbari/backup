@@ -10,5 +10,6 @@ pub fn dispatch(matches: &ArgMatches) -> Result<Action> {
             .ok_or_else(|| anyhow::anyhow!("Name required"))?,
         depth: matches.get_one("depth").copied().unwrap_or(2),
         version: matches.get_one("version").copied(),
+        target: matches.get_one("target").cloned(),
     })
 }

@@ -26,5 +26,6 @@ pub enum Action {
         name: String,
         depth: usize,
         version: Option<i64>,
+        target: Option<String>,
     },
 }

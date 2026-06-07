@@ -78,13 +78,30 @@ backup view mybackup
 
 `view` reads the versioned metadata and prints the actual captured file tree.
 By default it shows the latest snapshot to a depth of 2, annotating deeper
-directories with their file count. Use `--depth N` (`0` for the full tree) and
+directories with their file count. Each file is shown with a stable id (`[N]`)
+in the left gutter. Use `-d`/`--depth N` (`0` for the full tree) and
 `--version V` to change what is shown:
 
 ```bash
-backup view mybackup --depth 0          # full tree
+backup view mybackup -d 0               # full tree, with file ids
 backup view mybackup --version 3        # an older snapshot
 ```
+
+Pass a target to act on a specific entry:
+
+```bash
+backup view mybackup 7                   # resolve file id 7 (also "#7")
+backup view mybackup /home/user/docs     # drill into a directory subtree
+```
+
+A numeric target is a **file id** — `view` prints its full path (and, once
+restore lands, restores it). The id is the file's stable database key, so it
+stays valid across listings and depths for that version. An absolute-path target
+lists that directory's subtree. (Directories are addressed by path, not id.)
+
+The path must be the **full absolute path** as stored (e.g.
+`/home/nbari/projects/rust`, not `/rust`); matching is exact, with no partial or
+fuzzy resolution — use the file ids for a shorter handle.
 
 Metadata is stored in SQLite under `~/.backup/<name>.db`, with the naming-key
 cache alongside it as `~/.backup/<name>.wkey`. Scan errors and skipped entries

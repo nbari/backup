@@ -23,6 +23,13 @@ pub struct RestoreEntry {
     pub hash: String,
 }
 
+/// A file entry for browsing: its stable id (`FileNames.name_id`) and full path.
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct ViewEntry {
+    pub id: i64,
+    pub path: PathBuf,
+}
+
 #[derive(Clone)]
 pub struct SqliteCatalog {
     db_path: PathBuf,
@@ -248,6 +255,44 @@ impl SqliteCatalog {
     pub fn restore_entries(&self, version: i64) -> Result<Vec<RestoreEntry>> {
         let conn = self.pool.get()?;
         restore_entries(&conn, version)
+    }
+
+    /// List browsable file entries active at a version, optionally scoped to a
+    /// directory subtree.
+    ///
+    /// # Errors
+    /// Returns an error if the metadata cannot be read.
+    pub fn view_entries(&self, version: i64, root: Option<&Path>) -> Result<Vec<ViewEntry>> {
+        let conn = self.pool.get()?;
+        view_entries(&conn, version, root)
+    }
+
+    /// Resolve a file id (`FileNames.name_id`) to its full path, if it is active
+    /// at the given version.
+    ///
+    /// # Errors
+    /// Returns an error if the metadata cannot be read.
+    pub fn file_path_at_version(&self, name_id: i64, version: i64) -> Result<Option<PathBuf>> {
+        let conn = self.pool.get()?;
+
+        let row = conn
+            .query_row(
+                "SELECT Paths.path, FileNames.name
+                 FROM FileNames
+                 JOIN Paths ON Paths.path_id = FileNames.path_id
+                 WHERE FileNames.name_id = ?1
+                   AND FileNames.first_version <= ?2
+                   AND (FileNames.last_version IS NULL OR FileNames.last_version >= ?2)",
+                params![name_id, version],
+                |row| {
+                    let parent: String = row.get(0)?;
+                    let name: String = row.get(1)?;
+                    Ok(PathBuf::from(parent).join(name))
+                },
+            )
+            .optional()?;
+
+        Ok(row)
     }
 
     /// Return the most recent backup version, or `None` if no runs are recorded.
@@ -520,6 +565,57 @@ fn restore_entries(conn: &Connection, version: i64) -> Result<Vec<RestoreEntry>>
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
+
+    entries.sort();
+
+    Ok(entries)
+}
+
+fn view_entries(conn: &Connection, version: i64, root: Option<&Path>) -> Result<Vec<ViewEntry>> {
+    // Optional subtree scope: an index-friendly range over Paths.path that
+    // matches the directory itself and everything under "<root>/...".
+    // '/' (0x2F) < '0' (0x30), so [root || '/', root || '0') captures children.
+    let (scope_sql, scope_params): (&str, Vec<String>) = match root {
+        Some(root) => {
+            let root = root.to_string_lossy().to_string();
+            (
+                "AND (Paths.path = ?2 OR (Paths.path >= ?2 || '/' AND Paths.path < ?2 || '0'))",
+                vec![root],
+            )
+        }
+        None => ("", Vec::new()),
+    };
+
+    let sql = format!(
+        "SELECT FileNames.name_id, Paths.path, FileNames.name
+         FROM FileNames
+         JOIN Paths ON Paths.path_id = FileNames.path_id
+         WHERE FileNames.first_version <= ?1
+           AND (FileNames.last_version IS NULL OR FileNames.last_version >= ?1)
+           {scope_sql}
+         ORDER BY Paths.path, FileNames.name"
+    );
+
+    let mut stmt = conn.prepare(&sql)?;
+
+    let map_row = |row: &rusqlite::Row| {
+        let id: i64 = row.get(0)?;
+        let parent: String = row.get(1)?;
+        let name: String = row.get(2)?;
+        Ok(ViewEntry {
+            id,
+            path: PathBuf::from(parent).join(name),
+        })
+    };
+
+    let mut entries = match scope_params.first() {
+        Some(root) => stmt
+            .query_map(params![version, root], map_row)?
+            .collect::<rusqlite::Result<Vec<_>>>()?,
+        None => stmt
+            .query_map(params![version], map_row)?
+            .collect::<rusqlite::Result<Vec<_>>>()?,
+    };
 
     entries.sort();
 

@@ -11,6 +11,11 @@ pub fn command() -> Command {
                 .required(true),
         )
         .arg(
+            Arg::new("target")
+                .help("A file id (e.g. 7 or #7) to resolve, or an absolute path to drill into")
+                .value_parser(NonEmptyStringValueParser::new()),
+        )
+        .arg(
             Arg::new("depth")
                 .short('d')
                 .long("depth")
