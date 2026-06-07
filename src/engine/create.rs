@@ -60,7 +60,9 @@ pub fn create(request: CreateBackupRequest) -> Result<CreateBackupResult> {
     })
 }
 
-fn get_unique_dir_parents(mut dirs: Vec<PathBuf>) -> Vec<PathBuf> {
+/// Collapse a set of directories to non-overlapping parents (drops any directory
+/// that is nested under another in the set).
+pub(crate) fn get_unique_dir_parents(mut dirs: Vec<PathBuf>) -> Vec<PathBuf> {
     dirs.sort();
 
     let mut result = Vec::new();

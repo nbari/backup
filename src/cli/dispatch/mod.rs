@@ -1,4 +1,6 @@
+pub mod cmd_edit;
 pub mod cmd_new;
+pub mod cmd_restore;
 pub mod cmd_run;
 pub mod cmd_show;
 pub mod cmd_view;
@@ -22,6 +24,8 @@ pub fn handler(matches: &clap::ArgMatches) -> Result<Action> {
         Some("show") => Ok(cmd_show::dispatch()),
         Some("run") => cmd_run::dispatch(get_subcommand_matches(matches, "run")?),
         Some("view") => cmd_view::dispatch(get_subcommand_matches(matches, "view")?),
+        Some("edit") => cmd_edit::dispatch(get_subcommand_matches(matches, "edit")?),
+        Some("restore") => cmd_restore::dispatch(get_subcommand_matches(matches, "restore")?),
 
         _ => Err(anyhow!("Unsupported command")),
     }

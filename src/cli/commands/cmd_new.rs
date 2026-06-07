@@ -1,46 +1,5 @@
-use clap::{Arg, ArgAction, Command, builder::ValueParser};
-use std::{fs, path::PathBuf};
-
-// alpahnumeric validator
-pub fn validator_is_alphanumeric() -> ValueParser {
-    ValueParser::from(move |s: &str| -> std::result::Result<String, String> {
-        if s == "_" {
-            return Err("The name cannot be just an underscore".to_string());
-        }
-
-        if s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
-            return Ok(s.to_string());
-        }
-
-        Err("Only alphanumeric characters and underscore are allowed".to_string())
-    })
-}
-
-pub fn validator_is_file() -> ValueParser {
-    ValueParser::from(move |s: &str| -> std::result::Result<PathBuf, String> {
-        if let Ok(metadata) = fs::metadata(s)
-            && metadata.is_file()
-        {
-            return Ok(PathBuf::from(s));
-        }
-
-        Err(format!("Invalid file path or file does not exist: '{s}'"))
-    })
-}
-
-pub fn validator_is_dir() -> ValueParser {
-    ValueParser::from(move |s: &str| -> std::result::Result<PathBuf, String> {
-        if let Ok(metadata) = fs::metadata(s)
-            && metadata.is_dir()
-        {
-            return Ok(PathBuf::from(s));
-        }
-
-        Err(format!(
-            "Invalid directory path or directory does not exist: '{s}'"
-        ))
-    })
-}
+use crate::cli::commands::validators;
+use clap::{Arg, ArgAction, Command};
 
 pub fn command() -> Command {
     Command::new("new")
@@ -49,7 +8,7 @@ pub fn command() -> Command {
             Arg::new("name")
                 .help("Name of the backup")
                 .required(true)
-                .value_parser(validator_is_alphanumeric()),
+                .value_parser(validators::is_alphanumeric()),
         )
         .arg(
             Arg::new("directory")
@@ -57,7 +16,7 @@ pub fn command() -> Command {
                 .short('d')
                 .long("dir")
                 .help("Add a directory to the backup")
-                .value_parser(validator_is_dir()),
+                .value_parser(validators::is_dir()),
         )
         .arg(
             Arg::new("file")
@@ -65,7 +24,7 @@ pub fn command() -> Command {
                 .short('f')
                 .long("file")
                 .help("Add a file to the backup")
-                .value_parser(validator_is_file()),
+                .value_parser(validators::is_file()),
         )
 }
 

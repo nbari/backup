@@ -28,7 +28,7 @@ Not implemented yet:
 - copying file contents
 - encrypting file contents
 - uploading blobs
-- restore command
+- `restore` (the command exists as a placeholder but does not restore anything yet)
 - S3 or other storage backends
 
 ## Usage
@@ -43,6 +43,22 @@ Creating a backup prints a **12-word recovery mnemonic once**. Write it down and
 store it offline: it is the only secret that can recover the backup, and it is
 never written to disk. Creation also writes a `<name>.wkey` cache (see
 [Security model](#security-model)).
+
+Change what a backup covers later with `edit` — add or remove directories and
+files without recreating it:
+
+```bash
+backup edit mybackup -d /home/user3            # add a directory
+backup edit mybackup -f /etc/hosts             # add a file
+backup edit mybackup --rm-dir /home/user2      # remove a directory
+backup edit mybackup --rm-file /etc/hosts      # remove a file
+```
+
+Added paths must exist (same checks as `new`); removed paths are matched by
+string, so you can drop entries that no longer exist on disk. After editing,
+directories are collapsed to non-overlapping parents and any file now covered by
+a directory is dropped — the same rules `new` applies. Running `edit mybackup`
+with no flags just prints the current configuration.
 
 Run a scan:
 
@@ -63,6 +79,25 @@ Preview a run without updating metadata:
 ```bash
 backup run mybackup --dry-run
 ```
+
+### Consistency — what to back up
+
+`backup run` takes a **fast, point-in-time snapshot of the filesystem state**,
+and the data is uploaded afterwards. Each file is captured as a coherent read,
+but the snapshot is **not an atomic image of the whole set** at one instant (no
+filesystem/LVM/ZFS snapshot is taken). What this means in practice:
+
+- **Databases and other live, multi-file state:** take an application-level dump
+  or backup **first**, then point `backup` at the result. For example run
+  `pg_dump` / `mariadb-backup` (or `mariadbbackup`) to a directory, and back up
+  that directory — backing up live data files directly is not guaranteed
+  consistent.
+- **Prefer directories with stable / infrequently-changing data.** That is the
+  intended target.
+- **Files that change during a run** (e.g. busy logs) are captured as they exist
+  **at the moment they are read** — a coherent snapshot of that file at that
+  time, just not necessarily the instant `run` started. The next run picks up
+  any later changes.
 
 Show configured backups:
 

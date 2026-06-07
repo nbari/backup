@@ -169,6 +169,48 @@ impl SqliteCatalog {
         Ok(())
     }
 
+    /// Replace the configured directories with the given set.
+    ///
+    /// # Errors
+    /// Returns an error if the directories cannot be stored.
+    pub fn set_directories(&self, dirs: &[PathBuf]) -> Result<()> {
+        let mut conn = self.pool.get()?;
+        let tx = conn.transaction()?;
+
+        tx.execute("DELETE FROM config_directories", [])?;
+
+        let mut stmt = tx.prepare("INSERT OR IGNORE INTO config_directories (path) VALUES (?1)")?;
+        for dir in dirs {
+            stmt.execute(params![dir.to_string_lossy().to_string()])?;
+        }
+
+        drop(stmt);
+        tx.commit()?;
+
+        Ok(())
+    }
+
+    /// Replace the configured files with the given set (stored verbatim).
+    ///
+    /// # Errors
+    /// Returns an error if the files cannot be stored.
+    pub fn set_files(&self, files: &[PathBuf]) -> Result<()> {
+        let mut conn = self.pool.get()?;
+        let tx = conn.transaction()?;
+
+        tx.execute("DELETE FROM config_files", [])?;
+
+        let mut stmt = tx.prepare("INSERT OR IGNORE INTO config_files (path) VALUES (?1)")?;
+        for file in files {
+            stmt.execute(params![file.to_string_lossy().to_string()])?;
+        }
+
+        drop(stmt);
+        tx.commit()?;
+
+        Ok(())
+    }
+
     /// Return configured backup directories.
     ///
     /// # Errors
