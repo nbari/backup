@@ -26,6 +26,9 @@ Tests are colocated with the modules they exercise using `#[cfg(test)]`.
 - `just test`: run clippy, then tests with `--nocapture`.
 - `just coverage`: generate HTML coverage under `target/coverage/html`.
 
+Tracing is off by default. Use `RUST_LOG=backup=debug cargo run -- run
+mybackup` for internal diagnostics.
+
 ## Coding Style & Naming Conventions
 
 Use standard `rustfmt` formatting. Follow Rust naming conventions:

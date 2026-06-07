@@ -1,11 +1,10 @@
 use anyhow::Result;
-use tracing::Level;
 use tracing_subscriber::{EnvFilter, Registry, fmt, layer::SubscriberExt};
 
 /// Start the telemetry layer
 /// # Errors
 /// Will return an error if the telemetry layer fails to start
-pub fn init(verbosity_level: Option<Level>) -> Result<()> {
+pub fn init() -> Result<()> {
     let fmt_layer = fmt::layer()
         .without_time()
         .with_level(false)
@@ -16,13 +15,9 @@ pub fn init(verbosity_level: Option<Level>) -> Result<()> {
         .with_target(false)
         .compact();
 
-    let filter = if let Some(verbosity_level) = verbosity_level {
-        EnvFilter::builder()
-            .with_default_directive(verbosity_level.into())
-            .from_env_lossy()
-            .add_directive("tokio=error".parse()?)
-    } else {
-        EnvFilter::try_new("off")?
+    let filter = match EnvFilter::try_from_default_env() {
+        Ok(filter) => filter.add_directive("tokio=error".parse()?),
+        Err(_) => EnvFilter::try_new("off")?,
     };
 
     let subscriber = Registry::default().with(fmt_layer).with(filter);

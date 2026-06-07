@@ -113,6 +113,9 @@ cargo test
 The project uses Rust 2024 and strict lint settings. Warnings, `unwrap()`,
 `expect()`, panics, unchecked indexing, and large stack arrays are denied.
 
+Diagnostic tracing is disabled by default. Use `RUST_LOG`, for example
+`RUST_LOG=backup=debug cargo run -- run mybackup`, when debugging internals.
+
 ## Packaging
 
 Release workflows build archive artifacts and Linux packages. Package metadata

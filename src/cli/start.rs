@@ -21,23 +21,11 @@ pub fn start() -> Result<(Action, GlobalArgs)> {
     let config_path = get_config_path()?;
 
     let matches = commands::new(config_path.clone()).get_matches();
-    let verbosity = matches.get_count("verbose");
     let quiet = matches.get_flag("quiet");
 
-    let verbosity_level = if quiet {
-        None
-    } else {
-        match verbosity {
-            0 => None,
-            1 => Some(tracing::Level::INFO),
-            2 => Some(tracing::Level::DEBUG),
-            _ => Some(tracing::Level::TRACE),
-        }
-    };
+    let global_args = GlobalArgs::new(&config_path, quiet);
 
-    let global_args = GlobalArgs::new(&config_path, verbosity, quiet);
-
-    telemetry::init(verbosity_level)?;
+    telemetry::init()?;
     let action = handler(&matches)?;
 
     Ok((action, global_args))

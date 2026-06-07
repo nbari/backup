@@ -32,21 +32,11 @@ pub fn new(config_path: PathBuf) -> Command {
                 .global(true),
         )
         .arg(
-            Arg::new("verbose")
-                .short('v')
-                .long("verbose")
-                .help("Increase output verbosity (use -vv for more verbosity)")
-                .global(true)
-                .conflicts_with("quiet")
-                .action(clap::ArgAction::Count),
-        )
-        .arg(
             Arg::new("quiet")
                 .short('q')
                 .long("quiet")
                 .help("Suppress progress and summary output")
                 .global(true)
-                .conflicts_with("verbose")
                 .action(clap::ArgAction::SetTrue),
         )
         .subcommand(cmd_edit::command())
@@ -82,10 +72,10 @@ mod tests {
     }
 
     #[test]
-    fn test_quiet_conflicts_with_verbose() {
-        let result =
-            new(PathBuf::from(".")).try_get_matches_from(vec!["backup", "-q", "-v", "show"]);
+    fn test_quiet_flag() -> Result<()> {
+        let matches = new(PathBuf::from(".")).try_get_matches_from(vec!["backup", "-q", "show"])?;
 
-        assert!(result.is_err());
+        assert!(matches.get_flag("quiet"));
+        Ok(())
     }
 }

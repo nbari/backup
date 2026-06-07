@@ -46,17 +46,15 @@ impl TimerManager {
 pub struct GlobalArgs {
     pub home: PathBuf,
     pub timer: TimerManager,
-    pub verbosity: u8,
     pub quiet: bool,
 }
 
 impl GlobalArgs {
     #[must_use]
-    pub fn new(home_dir: &Path, verbosity: u8, quiet: bool) -> Self {
+    pub fn new(home_dir: &Path, quiet: bool) -> Self {
         Self {
             home: home_dir.to_path_buf(),
             timer: TimerManager,
-            verbosity,
             quiet,
         }
     }
