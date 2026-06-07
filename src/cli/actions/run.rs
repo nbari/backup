@@ -479,11 +479,268 @@ async fn log_skipped_file(log_file: &Path, file_path: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{utils::crypto::decrypt, utils::db::create_metadata_schema};
+    use anyhow::Context;
+    use bip39::{Language, Mnemonic};
+    use std::{collections::BTreeMap, fs};
     use x25519_dalek::StaticSecret;
+
+    #[derive(Debug, Clone, Eq, Ord, PartialEq, PartialOrd)]
+    struct SnapshotEntry {
+        path: PathBuf,
+        hash: String,
+    }
 
     fn public_key() -> PublicKey {
         let private_key = StaticSecret::from([7_u8; 32]);
         PublicKey::from(&private_key)
+    }
+
+    fn recovery_keypair() -> Result<(Mnemonic, PublicKey)> {
+        let mnemonic = Mnemonic::generate_in(Language::English, 12)?;
+        let seed = mnemonic.to_seed("");
+
+        let mut seed_bytes = [0_u8; 32];
+        let seed_prefix = seed
+            .get(..32)
+            .ok_or_else(|| anyhow!("Mnemonic seed is too short"))?;
+        seed_bytes.copy_from_slice(seed_prefix);
+
+        let private_key = StaticSecret::from(seed_bytes);
+
+        Ok((mnemonic, PublicKey::from(&private_key)))
+    }
+
+    fn hash_content(content: &str) -> String {
+        ::blake3::hash(content.as_bytes()).to_hex().to_string()
+    }
+
+    fn write_test_file(
+        expected: &mut BTreeMap<PathBuf, String>,
+        path: &Path,
+        content: &str,
+    ) -> Result<()> {
+        let parent = path
+            .parent()
+            .ok_or_else(|| anyhow!("Test file has no parent directory"))?;
+        fs::create_dir_all(parent)?;
+        fs::write(path, content)?;
+        expected.insert(path.to_path_buf(), hash_content(content));
+
+        Ok(())
+    }
+
+    fn remove_test_file(expected: &mut BTreeMap<PathBuf, String>, path: &Path) -> Result<()> {
+        fs::remove_file(path)?;
+        expected.remove(path);
+
+        Ok(())
+    }
+
+    fn snapshot_from_expected(expected: &BTreeMap<PathBuf, String>) -> Vec<SnapshotEntry> {
+        expected
+            .iter()
+            .map(|(path, hash)| SnapshotEntry {
+                path: path.clone(),
+                hash: hash.clone(),
+            })
+            .collect()
+    }
+
+    async fn commit_sources(
+        pool: &Arc<Pool<SqliteConnectionManager>>,
+        public_key: PublicKey,
+        sources: &[PathBuf],
+    ) -> Result<i64> {
+        let version = get_backup_version(pool)?;
+        let mut scanned_files = Vec::new();
+
+        for source in sources {
+            for file_result in walk_directory(source, false) {
+                let path = file_result?;
+                let hash = calculate_hash(path.clone()).await?;
+                scanned_files.push(ScannedFile { path, hash });
+            }
+        }
+
+        update_backup_metadata(pool.clone(), public_key, version, scanned_files, true).await?;
+
+        Ok(version)
+    }
+
+    fn restore_entries(conn: &Connection, version: i64) -> Result<Vec<SnapshotEntry>> {
+        let mut stmt = conn.prepare(
+            "SELECT Paths.path, FileNames.name, Files.hash
+             FROM FileNames
+             JOIN Paths ON Paths.path_id = FileNames.path_id
+             JOIN Files ON Files.file_id = FileNames.file_id
+             WHERE FileNames.first_version <= ?1
+               AND (
+                   FileNames.last_version IS NULL
+                   OR FileNames.last_version >= ?1
+               )
+             ORDER BY Paths.path, FileNames.name",
+        )?;
+
+        let mut entries = stmt
+            .query_map(params![version], |row| {
+                let parent: String = row.get(0)?;
+                let name: String = row.get(1)?;
+                let hash: String = row.get(2)?;
+
+                Ok(SnapshotEntry {
+                    path: PathBuf::from(parent).join(name),
+                    hash,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+
+        entries.sort();
+
+        Ok(entries)
+    }
+
+    fn assert_recovery_material_is_not_stored(conn: &Connection) -> Result<()> {
+        let secret_count: i64 = conn.query_row(
+            "SELECT COUNT(*)
+             FROM Config
+             WHERE name IN ('mnemonic', 'password', 'private_key')",
+            [],
+            |row| row.get(0),
+        )?;
+
+        assert_eq!(secret_count, 0);
+
+        Ok(())
+    }
+
+    fn assert_file_key_can_be_unwrapped(conn: &Connection, mnemonic: &Mnemonic) -> Result<()> {
+        let (encrypted_key, ephemeral_public_key): (Vec<u8>, Vec<u8>) = conn.query_row(
+            "SELECT encrypted_key, ephemeral_public_key FROM Files LIMIT 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+
+        let ephemeral_public_key = ephemeral_public_key
+            .try_into()
+            .map_err(|_| anyhow!("Invalid ephemeral public key length"))?;
+        let file_key = decrypt(&encrypted_key, &ephemeral_public_key, mnemonic)?;
+
+        assert_eq!(file_key.len(), 32);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn filesystem_versions_restore_expected_path_hash_snapshots() -> Result<()> {
+        let temp_dir = tempfile::tempdir()?;
+        let db_path = temp_dir.path().join("metadata.db");
+        let source_a = temp_dir.path().join("source-a");
+        let source_b = temp_dir.path().join("source-b");
+        let sources = vec![source_a.clone(), source_b.clone()];
+
+        create_metadata_schema(&db_path)?;
+
+        let pool = create_connection_pool(&db_path)?;
+        let (mnemonic, public_key) = recovery_keypair()?;
+
+        let alpha = source_a.join("alpha.txt");
+        let duplicate_a = source_a.join("duplicate.txt");
+        let duplicate_b = source_b.join("duplicate.txt");
+        let stable = source_b.join("stable.txt");
+        let new_file = source_a.join("new.txt");
+
+        let mut expected = BTreeMap::new();
+        let mut expected_versions = Vec::new();
+
+        write_test_file(&mut expected, &alpha, "alpha original\n")?;
+        write_test_file(&mut expected, &duplicate_a, "same duplicate content\n")?;
+        write_test_file(&mut expected, &duplicate_b, "same duplicate content\n")?;
+        write_test_file(&mut expected, &stable, "stable content\n")?;
+
+        let version = commit_sources(&pool, public_key, &sources).await?;
+        assert_eq!(version, 1);
+        expected_versions.push((version, snapshot_from_expected(&expected)));
+
+        let version = commit_sources(&pool, public_key, &sources).await?;
+        assert_eq!(version, 2);
+        expected_versions.push((version, snapshot_from_expected(&expected)));
+
+        write_test_file(&mut expected, &alpha, "alpha modified\n")?;
+        let version = commit_sources(&pool, public_key, &sources).await?;
+        assert_eq!(version, 3);
+        expected_versions.push((version, snapshot_from_expected(&expected)));
+
+        remove_test_file(&mut expected, &duplicate_b)?;
+        let version = commit_sources(&pool, public_key, &sources).await?;
+        assert_eq!(version, 4);
+        expected_versions.push((version, snapshot_from_expected(&expected)));
+
+        write_test_file(&mut expected, &new_file, "new file content\n")?;
+        let version = commit_sources(&pool, public_key, &sources).await?;
+        assert_eq!(version, 5);
+        expected_versions.push((version, snapshot_from_expected(&expected)));
+
+        write_test_file(&mut expected, &duplicate_b, "same duplicate content\n")?;
+        let version = commit_sources(&pool, public_key, &sources).await?;
+        assert_eq!(version, 6);
+        expected_versions.push((version, snapshot_from_expected(&expected)));
+
+        write_test_file(&mut expected, &duplicate_a, "updated duplicate content\n")?;
+        write_test_file(&mut expected, &duplicate_b, "updated duplicate content\n")?;
+        let version = commit_sources(&pool, public_key, &sources).await?;
+        assert_eq!(version, 7);
+        expected_versions.push((version, snapshot_from_expected(&expected)));
+
+        remove_test_file(&mut expected, &alpha)?;
+        let version = commit_sources(&pool, public_key, &sources).await?;
+        assert_eq!(version, 8);
+        expected_versions.push((version, snapshot_from_expected(&expected)));
+
+        write_test_file(&mut expected, &alpha, "alpha original\n")?;
+        let version = commit_sources(&pool, public_key, &sources).await?;
+        assert_eq!(version, 9);
+        expected_versions.push((version, snapshot_from_expected(&expected)));
+
+        remove_test_file(&mut expected, &duplicate_a)?;
+        remove_test_file(&mut expected, &duplicate_b)?;
+        let version = commit_sources(&pool, public_key, &sources).await?;
+        assert_eq!(version, 10);
+        expected_versions.push((version, snapshot_from_expected(&expected)));
+
+        let conn = Connection::open(&db_path)?;
+
+        for (version, expected_snapshot) in expected_versions {
+            assert_eq!(restore_entries(&conn, version)?, expected_snapshot);
+        }
+
+        let file_rows: i64 = conn.query_row("SELECT COUNT(*) FROM Files", [], |row| row.get(0))?;
+        let unique_hashes: i64 =
+            conn.query_row("SELECT COUNT(DISTINCT hash) FROM Files", [], |row| {
+                row.get(0)
+            })?;
+        let history_rows: i64 =
+            conn.query_row("SELECT COUNT(*) FROM FileNames", [], |row| row.get(0))?;
+        let active_rows: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM FileNames WHERE last_version IS NULL",
+            [],
+            |row| row.get(0),
+        )?;
+
+        assert_eq!(file_rows, 6);
+        assert_eq!(unique_hashes, 6);
+        assert_eq!(history_rows, 10);
+        assert_eq!(active_rows, 3);
+        assert_eq!(
+            restore_entries(&conn, 10)?,
+            snapshot_from_expected(&expected)
+        );
+
+        assert_recovery_material_is_not_stored(&conn)?;
+        assert_file_key_can_be_unwrapped(&conn, &mnemonic)
+            .context("stored file key should unwrap with recovery mnemonic")?;
+
+        Ok(())
     }
 
     fn create_test_schema(conn: &Connection) -> Result<()> {

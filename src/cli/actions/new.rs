@@ -1,4 +1,4 @@
-use crate::cli::actions::Action;
+use crate::{cli::actions::Action, utils::db::create_metadata_schema};
 use anyhow::Result;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use bip39::{Language, Mnemonic};
@@ -28,7 +28,7 @@ pub fn handle(action: Action) -> Result<()> {
         }
 
         // Create the backup database tables
-        create_db_tables(&db_path)?;
+        create_metadata_schema(&db_path)?;
 
         let mnemonic = Mnemonic::generate_in(Language::English, 12)?;
 
@@ -78,88 +78,6 @@ pub fn handle(action: Action) -> Result<()> {
 
         println!("\n\nPlease write this down and store it in a safe place.");
     }
-
-    Ok(())
-}
-
-fn create_db_tables(db_path: &PathBuf) -> Result<()> {
-    let conn = Connection::open(db_path)?;
-
-    // table to store config info, like public key
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS Config (
-    name TEXT PRIMARY KEY,
-    value TEXT NOT NULL
-)",
-        [],
-    )?;
-
-    // table to store unique file content, using content hash to avoid duplicates
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS Files (
-    file_id INTEGER PRIMARY KEY,
-    hash TEXT NOT NULL UNIQUE,
-    encrypted_key BLOB NOT NULL,
-    ephemeral_public_key BLOB NOT NULL
-)",
-        [],
-    )?;
-
-    // table to store directory paths
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS Paths(
-    path_id INTEGER PRIMARY KEY,
-    path TEXT NOT NULL UNIQUE
-)",
-        [],
-    )?;
-
-    // table to store files with version tracking
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS FileNames (
-    name_id INTEGER PRIMARY KEY,
-    path_id INTEGER NOT NULL,        -- Foreign key referencing Paths table
-    name TEXT NOT NULL,              -- Name of the file in the Path
-    file_id INTEGER NOT NULL,        -- Foreign key referencing Files for content hash
-    first_version INTEGER NOT NULL,  -- The version in which this file path first appeared
-    last_version INTEGER,            -- The last version this file path was valid (NULL if still valid)
-
-    FOREIGN KEY (path_id) REFERENCES Paths(path_id),
-    FOREIGN KEY (file_id) REFERENCES Files(file_id),
-    CHECK(last_version IS NULL OR last_version >= first_version),
-
-    UNIQUE(path_id, name, first_version)
-)",
-        [],
-    )?;
-
-    // Table to track each backup version
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS BackupVersions (
-    version_id INTEGER PRIMARY KEY,
-    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP -- Timestamp when the backup was created
-)",
-        [],
-    )?;
-
-    // Index for efficient file retrieval by version
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_files_version ON FileNames (first_version, last_version)",
-        [],
-    )?;
-
-    conn.execute(
-        "CREATE UNIQUE INDEX IF NOT EXISTS idx_filenames_one_active
-         ON FileNames(path_id, name)
-         WHERE last_version IS NULL",
-        [],
-    )?;
-
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_filenames_path_history
-         ON FileNames(path_id, name, first_version, last_version)",
-        [],
-    )?;
 
     Ok(())
 }
@@ -299,7 +217,7 @@ mod tests {
             PathBuf::from("/b/d"),
         ];
 
-        create_db_tables(&db_path)?;
+        create_metadata_schema(&db_path)?;
 
         let backup_dirs = get_unique_dir_parents(dirs);
 

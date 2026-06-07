@@ -1,14 +1,88 @@
 # backup
 
-Command line tool for creating encrypted backups avoiding duplicates.
+`backup` is an early-stage Rust CLI for building a secure, content-addressable
+backup system.
 
-[![crates.io](https://img.shields.io/crates/v/backup.svg)](https://crates.io/crates/backup)
-[![Build Status](https://travis-ci.org/nbari/backup.svg?branch=master)](https://travis-ci.org/nbari/backup)
+The current implementation is focused on the metadata engine: scanning files,
+hashing content, detecting changes, tracking versions, and storing backup state
+in SQLite. File storage, encrypted blob uploads, and restore commands are not
+implemented yet.
+
+## Current status
+
+Implemented:
+
+- create named backup definitions
+- track configured files and directories
+- scan the filesystem
+- calculate BLAKE3 content hashes
+- detect new, changed, unchanged, and deleted files
+- store version history in SQLite
+- keep enough metadata to query historical snapshots
+
+Not implemented yet:
+
+- copying file contents
+- encrypting file contents
+- uploading blobs
+- restore command
+- S3 or other storage backends
 
 ## Usage
 
-Create a new backup of /home/user1 and /home/user2
+Create a backup definition:
 
 ```bash
 backup new mybackup -d /home/user1 -d /home/user2
 ```
+
+Run a scan:
+
+```bash
+backup run mybackup
+```
+
+Preview a run without updating metadata:
+
+```bash
+backup run mybackup --dry-run
+```
+
+Show configured backups:
+
+```bash
+backup show
+```
+
+Use `--no-gitignore` to ignore `.gitignore` rules while scanning.
+
+## Design direction
+
+The goal is to support:
+
+- per-file encryption with unique file keys
+- content-addressable encrypted blobs
+- deduplication by content hash
+- complete version history
+- deleted-file tracking
+- point-in-time restore
+- future storage backends such as S3, MinIO, B2, and local filesystem storage
+
+SQLite is currently the authoritative metadata store. Storage backends should be
+blob repositories only; metadata should remain the source of truth.
+
+## Development
+
+```bash
+cargo fmt --all -- --check
+cargo clippy --all-targets --all-features
+cargo test
+```
+
+The project uses Rust 2024 and strict lint settings. Warnings, `unwrap()`,
+`expect()`, panics, unchecked indexing, and large stack arrays are denied.
+
+## Packaging
+
+Release workflows build archive artifacts and Linux packages. Package metadata
+for `.deb` and `.rpm` output is defined in `Cargo.toml`.

@@ -52,9 +52,12 @@ pub fn encrypt(file_key: &[u8; 32], public_key: &PublicKey) -> Result<(Vec<u8>, 
     )
 }
 
-// decrypt using mnemonic/seed (private key)
+/// Decrypt a wrapped file key using the recovery mnemonic.
+///
+/// # Errors
+/// Returns an error if the encrypted payload is malformed or key unwrapping fails.
 #[cfg(test)]
-fn decrypt(
+pub(crate) fn decrypt(
     encrypted_data: &[u8],
     eph_pub_bytes: &[u8; 32],
     mnemonic: &bip39::Mnemonic,
