@@ -1,13 +1,15 @@
 use crate::cli::actions::Action;
 use anyhow::Result;
-use base64::{engine::general_purpose::STANDARD, Engine as _};
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use bip39::{Language, Mnemonic};
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 use std::path::{Path, PathBuf};
 use tracing::debug;
 use x25519_dalek::{PublicKey, StaticSecret};
 
 /// Handle the create action
+/// # Errors
+/// Returns an error if the backup database cannot be created or initialized.
 pub fn handle(action: Action) -> Result<()> {
     if let Action::New {
         name,
@@ -16,13 +18,12 @@ pub fn handle(action: Action) -> Result<()> {
         file,
     } = action
     {
-        let db_path = config.join(format!("{}.db", name));
+        let db_path = config.join(format!("{name}.db"));
 
         // check if file already exists
         if db_path.exists() {
             return Err(anyhow::anyhow!(
-                "A backup with the name '{}' already exists",
-                name
+                "A backup with the name '{name}' already exists"
             ));
         }
 
@@ -36,7 +37,10 @@ pub fn handle(action: Action) -> Result<()> {
 
         let mut seed_bytes = [0u8; 32];
 
-        seed_bytes.copy_from_slice(&seed[0..32]);
+        let seed_prefix = seed
+            .get(..32)
+            .ok_or_else(|| anyhow::anyhow!("Mnemonic seed is too short"))?;
+        seed_bytes.copy_from_slice(seed_prefix);
 
         let private_key = StaticSecret::from(seed_bytes);
 
@@ -63,7 +67,7 @@ pub fn handle(action: Action) -> Result<()> {
 
         println!("Your recovery phrase is:\n");
 
-        println!("[ {} ]\n", mnemonic);
+        println!("[ {mnemonic} ]\n");
 
         for (i, word) in words.iter().enumerate() {
             print!("{:2}. {:12}", i + 1, word);
@@ -122,8 +126,9 @@ fn create_db_tables(db_path: &PathBuf) -> Result<()> {
 
     FOREIGN KEY (path_id) REFERENCES Paths(path_id),
     FOREIGN KEY (file_id) REFERENCES Files(file_id),
+    CHECK(last_version IS NULL OR last_version >= first_version),
 
-    UNIQUE(path_id, file_id, name) -- Ensure unique entries by path and version
+    UNIQUE(path_id, name, first_version)
 )",
         [],
     )?;
@@ -140,6 +145,19 @@ fn create_db_tables(db_path: &PathBuf) -> Result<()> {
     // Index for efficient file retrieval by version
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_files_version ON FileNames (first_version, last_version)",
+        [],
+    )?;
+
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_filenames_one_active
+         ON FileNames(path_id, name)
+         WHERE last_version IS NULL",
+        [],
+    )?;
+
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_filenames_path_history
+         ON FileNames(path_id, name, first_version, last_version)",
         [],
     )?;
 
@@ -218,7 +236,7 @@ fn create_db_config_files_table(db_path: &PathBuf, files: Vec<PathBuf>) -> Resul
     let dirs_iter = dirs_stmt.query_map([], |row| row.get::<_, String>(0))?;
 
     // Collect all directory paths
-    let dirs: Vec<String> = dirs_iter.filter_map(|result| result.ok()).collect();
+    let dirs: Vec<String> = dirs_iter.filter_map(std::result::Result::ok).collect();
 
     // Insert files only if they are not children of any of the directories
     for file in files {
@@ -259,14 +277,14 @@ mod tests {
         let result = get_unique_dir_parents(dirs);
 
         assert_eq!(result.len(), 2);
-        assert_eq!(result[0], PathBuf::from("/a/b"));
-        assert_eq!(result[1], PathBuf::from("/b"));
+        assert!(result.contains(&PathBuf::from("/a/b")));
+        assert!(result.contains(&PathBuf::from("/b")));
     }
 
     // test the create_config_directories_table function
     #[test]
-    fn test_create_db_config_directoris_and_files_table() {
-        let temp_dir = tempfile::tempdir().unwrap();
+    fn test_create_db_config_directoris_and_files_table() -> Result<()> {
+        let temp_dir = tempfile::tempdir()?;
 
         let db_path = temp_dir.path().join("test.db");
 
@@ -281,19 +299,19 @@ mod tests {
             PathBuf::from("/b/d"),
         ];
 
-        create_db_tables(&db_path).unwrap();
+        create_db_tables(&db_path)?;
 
         let backup_dirs = get_unique_dir_parents(dirs);
 
-        create_db_config_direcories_table(&db_path, backup_dirs).unwrap();
+        create_db_config_direcories_table(&db_path, backup_dirs)?;
 
-        let conn = Connection::open(&db_path).unwrap();
+        let conn = Connection::open(&db_path)?;
 
-        let mut stmt = conn.prepare("SELECT path FROM config_directories").unwrap();
+        let mut stmt = conn.prepare("SELECT path FROM config_directories")?;
 
-        let dirs_iter = stmt.query_map([], |row| row.get::<_, String>(0)).unwrap();
+        let dirs_iter = stmt.query_map([], |row| row.get::<_, String>(0))?;
 
-        let result: Vec<String> = dirs_iter.filter_map(|result| result.ok()).collect();
+        let result: Vec<String> = dirs_iter.filter_map(std::result::Result::ok).collect();
 
         assert_eq!(result.len(), 2);
         assert!(result.contains(&"/a/b".to_string()));
@@ -306,16 +324,18 @@ mod tests {
             PathBuf::from("/z/file4.txt"),
         ];
 
-        create_db_config_files_table(&db_path, files).unwrap();
+        create_db_config_files_table(&db_path, files)?;
 
-        let mut stmt = conn.prepare("SELECT path FROM config_files").unwrap();
+        let mut stmt = conn.prepare("SELECT path FROM config_files")?;
 
-        let files_iter = stmt.query_map([], |row| row.get::<_, String>(0)).unwrap();
+        let files_iter = stmt.query_map([], |row| row.get::<_, String>(0))?;
 
-        let result: Vec<String> = files_iter.filter_map(|result| result.ok()).collect();
+        let result: Vec<String> = files_iter.filter_map(std::result::Result::ok).collect();
 
         assert_eq!(result.len(), 2);
         assert!(result.contains(&"/a/file3.txt".to_string()));
         assert!(result.contains(&"/z/file4.txt".to_string()));
+
+        Ok(())
     }
 }

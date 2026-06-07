@@ -1,14 +1,14 @@
-use anyhow::{anyhow, Result};
-use bip39::Mnemonic;
+use anyhow::{Result, anyhow};
 use chacha20poly1305::{
+    ChaCha20Poly1305, Key,
     aead::{Aead, AeadCore, KeyInit, OsRng},
-    ChaCha20Poly1305, Key, Nonce,
 };
 use hkdf::Hkdf;
 use rand::RngCore;
 use sha2::Sha256;
-use x25519_dalek::{EphemeralSecret, PublicKey, StaticSecret};
+use x25519_dalek::{EphemeralSecret, PublicKey};
 
+#[must_use]
 pub fn generate_file_key() -> [u8; 32] {
     let mut key = [0u8; 32];
 
@@ -19,6 +19,9 @@ pub fn generate_file_key() -> [u8; 32] {
     key
 }
 
+/// Encrypt a file key for the provided public key.
+/// # Errors
+/// Returns an error if key derivation or encryption fails.
 pub fn encrypt(file_key: &[u8; 32], public_key: &PublicKey) -> Result<(Vec<u8>, [u8; 32])> {
     // 1. generate ephemeral key pair
     let e_secret = EphemeralSecret::random();
@@ -31,7 +34,7 @@ pub fn encrypt(file_key: &[u8; 32], public_key: &PublicKey) -> Result<(Vec<u8>, 
     let mut kek = [0; 32];
     Hkdf::<Sha256>::new(None, shared_secret.as_bytes())
         .expand(b"backup wrap", &mut kek)
-        .map_err(|err| anyhow!("Error during KEK HKDF expansion: {}", err))?;
+        .map_err(|err| anyhow!("Error during KEK HKDF expansion: {err}"))?;
 
     // Encrypt file key using ChaCha20Poly1305
     let cipher = ChaCha20Poly1305::new(Key::from_slice(&kek));
@@ -50,25 +53,27 @@ pub fn encrypt(file_key: &[u8; 32], public_key: &PublicKey) -> Result<(Vec<u8>, 
 }
 
 // decrypt using mnemonic/seed (private key)
-fn _decrypt(
+#[cfg(test)]
+fn decrypt(
     encrypted_data: &[u8],
     eph_pub_bytes: &[u8; 32],
-    mnemonic: &Mnemonic,
+    mnemonic: &bip39::Mnemonic,
 ) -> Result<Vec<u8>> {
     if encrypted_data.len() < 12 {
         return Err(anyhow::anyhow!("Encrypted data too short to contain nonce"));
     }
-
-    println!("encrypted data length: {}", encrypted_data.len());
 
     // derive private key again from mnemonic
     let seed = mnemonic.to_seed("");
 
     let mut seed_bytes = [0u8; 32];
 
-    seed_bytes.copy_from_slice(&seed[0..32]);
+    let seed_prefix = seed
+        .get(..32)
+        .ok_or_else(|| anyhow!("Mnemonic seed is too short"))?;
+    seed_bytes.copy_from_slice(seed_prefix);
 
-    let private_key = StaticSecret::from(seed_bytes);
+    let private_key = x25519_dalek::StaticSecret::from(seed_bytes);
 
     let eph_pub = PublicKey::from(*eph_pub_bytes);
 
@@ -79,13 +84,15 @@ fn _decrypt(
     let mut kek = [0u8; 32];
     Hkdf::<Sha256>::new(None, shared.as_bytes())
         .expand(b"backup wrap", &mut kek)
-        .unwrap();
+        .map_err(|err| anyhow!("Error during KEK HKDF expansion: {err}"))?;
 
     let cipher = ChaCha20Poly1305::new(Key::from_slice(&kek));
     let (nonce_bytes, ciphertext) = encrypted_data.split_at(12);
-    let nonce = Nonce::from_slice(nonce_bytes);
+    let nonce = chacha20poly1305::Nonce::from_slice(nonce_bytes);
 
-    let plaintext = cipher.decrypt(nonce, ciphertext.as_ref()).unwrap();
+    let plaintext = cipher
+        .decrypt(nonce, ciphertext.as_ref())
+        .map_err(|_| anyhow!("Failed to decrypt data"))?;
 
     Ok(plaintext)
 }
@@ -93,17 +100,21 @@ fn _decrypt(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bip39::Language;
+    use bip39::{Language, Mnemonic};
+    use x25519_dalek::StaticSecret;
 
     #[test]
-    fn test_encrypt_decrypt() {
-        let mnemonic = Mnemonic::generate_in(Language::English, 24).unwrap();
+    fn test_encrypt_decrypt() -> Result<()> {
+        let mnemonic = Mnemonic::generate_in(Language::English, 24)?;
 
         let seed = mnemonic.to_seed("");
 
         let mut seed_bytes = [0u8; 32];
 
-        seed_bytes.copy_from_slice(&seed[0..32]);
+        let seed_prefix = seed
+            .get(..32)
+            .ok_or_else(|| anyhow!("Mnemonic seed is too short"))?;
+        seed_bytes.copy_from_slice(seed_prefix);
 
         let private_key = StaticSecret::from(seed_bytes);
 
@@ -111,10 +122,12 @@ mod tests {
 
         let message = generate_file_key();
 
-        let (encrypted_data, eph_pub_bytes) = encrypt(&message, &public_key).unwrap();
+        let (encrypted_data, eph_pub_bytes) = encrypt(&message, &public_key)?;
 
-        let decrypted_message = _decrypt(&encrypted_data, &eph_pub_bytes, &mnemonic).unwrap();
+        let decrypted_message = decrypt(&encrypted_data, &eph_pub_bytes, &mnemonic)?;
 
         assert_eq!(hex::encode(message), hex::encode(decrypted_message));
+
+        Ok(())
     }
 }

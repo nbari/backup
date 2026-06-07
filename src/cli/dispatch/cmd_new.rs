@@ -7,7 +7,7 @@ pub fn dispatch(matches: &ArgMatches) -> Result<Action> {
     Ok(Action::New {
         name: matches
             .get_one("name")
-            .map(|s: &String| s.to_string())
+            .cloned()
             .ok_or_else(|| anyhow::anyhow!("Name required"))?,
 
         config: matches
@@ -19,7 +19,7 @@ pub fn dispatch(matches: &ArgMatches) -> Result<Action> {
             matches
                 .get_many::<PathBuf>("directory")
                 .unwrap_or_default()
-                .map(|v| v.to_path_buf())
+                .cloned()
                 .collect::<Vec<_>>(),
         ),
 
@@ -27,7 +27,7 @@ pub fn dispatch(matches: &ArgMatches) -> Result<Action> {
             matches
                 .get_many::<PathBuf>("file")
                 .unwrap_or_default()
-                .map(|v| v.to_path_buf())
+                .cloned()
                 .collect::<Vec<_>>(),
         ),
     })

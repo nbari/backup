@@ -10,13 +10,42 @@ readme = "README.md"
 keywords = ["backup", "cli", "restore"]
 categories = ["command-line-interface", "command-line-utilities"]
 license = "BSD-3-Clause"
-edition = "2021"
+edition = "2024"
+
+[lints.rust]
+warnings = "deny"
+
+[lints.clippy]
+# Allow unstable/opinionated lints (lower priority so individual lints can override)
+nursery = { level = "allow", priority = -1 }
+
+# Enforce pedantic lints
+pedantic = "deny"
+
+# Core lint groups
+all = "deny"
+correctness = "deny"
+suspicious = "deny"
+perf = "deny"
+complexity = "deny"
+
+# Safety-critical lints
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+indexing_slicing = "deny"
+await_holding_lock = "deny"
+
+# Performance + memory reliability
+needless_borrow = "deny"
+needless_collect = "deny"
+large_stack_arrays = "deny"
 
 [dependencies]
 anyhow = "1"
 base64 = "0.22.1"
-bip39 = { version = "2.2.0", features = ["rand", "zeroize"] }
-blake3 = "1.5"
+bip39 = { version = "2.2.2", features = ["rand", "zeroize"] }
+blake3 = "1.8"
 chacha20poly1305 = "0.10.1"
 chrono = "0.4"
 clap = { version = "4", features = ["string", "env"] }
@@ -25,20 +54,33 @@ dirs = "6"
 futures = "0.3"
 hex = "0.4.3"
 hkdf = "0.12.4"
-ignore = "0.4.23"
-num_cpus = "1.16"
-openssl = { version = "0.10", optional = true, features = ["vendored"] }
-opentelemetry = "0.30"
-opentelemetry-otlp = { version = "0.30", features = ["grpc-tonic", "tls"] }
-opentelemetry_sdk = { version = "0.30", features = ["rt-tokio"] }
+ignore = "0.4.26"
+num_cpus = "1.17"
 r2d2 = "0.8.10"
 r2d2_sqlite = "0.31.0"
-rand = "0.9.2"
+rand = "0.9.4"
 rusqlite = { version = "0.37", features = ["bundled", "unlock_notify"] }
 sha2 = "0.10.9"
-tempfile = "3.19"
+tempfile = "3.27"
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
-tracing-opentelemetry = "0.31"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 x25519-dalek = { version = "2.0.1", features = ["getrandom", "static_secrets"] }
+
+[package.metadata.generate-rpm]
+assets = [
+    { source = "target/release/backup", dest = "/usr/bin/backup", mode = "0755" },
+]
+
+[package.metadata.deb]
+assets = [
+  ["target/release/backup", "/usr/bin/backup", "755"],
+]
+depends = ""
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = true
+panic = "abort"

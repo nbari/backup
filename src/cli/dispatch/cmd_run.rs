@@ -6,7 +6,7 @@ pub fn dispatch(matches: &ArgMatches) -> Result<Action> {
     Ok(Action::Run {
         name: matches
             .get_one("name")
-            .map(|s: &String| s.to_string())
+            .cloned()
             .ok_or_else(|| anyhow::anyhow!("Name required"))?,
         no_gitignore: matches.get_one("no-gitignore").copied().unwrap_or(false),
         no_compression: matches.get_one("no-compression").copied().unwrap_or(false),

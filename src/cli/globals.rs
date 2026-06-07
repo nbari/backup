@@ -16,12 +16,14 @@ impl Default for Timer {
 
 impl Timer {
     /// Creates a new timer with the specified label.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             start: Instant::now(),
         }
     }
 
+    #[must_use]
     pub fn elapsed(&self) -> std::time::Duration {
         self.start.elapsed()
     }
@@ -33,6 +35,7 @@ pub struct TimerManager;
 
 impl TimerManager {
     /// Starts a new timer with the specified label.
+    #[must_use]
     pub fn start(&self) -> Timer {
         Timer::new()
     }

@@ -3,7 +3,7 @@ pub mod cmd_run;
 pub mod cmd_show;
 
 use crate::cli::actions::Action;
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 
 /// Helper function to get subcommand matches
 pub fn get_subcommand_matches<'a>(
@@ -18,9 +18,9 @@ pub fn get_subcommand_matches<'a>(
 pub fn handler(matches: &clap::ArgMatches) -> Result<Action> {
     match matches.subcommand_name() {
         Some("new") => cmd_new::dispatch(get_subcommand_matches(matches, "new")?),
-        Some("show") => cmd_show::dispatch(),
+        Some("show") => Ok(cmd_show::dispatch()),
         Some("run") => cmd_run::dispatch(get_subcommand_matches(matches, "run")?),
 
-        _ => todo!(),
+        _ => Err(anyhow!("Unsupported command")),
     }
 }

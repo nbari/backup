@@ -1,4 +1,4 @@
-use clap::{builder::ValueParser, Arg, ArgAction, Command};
+use clap::{Arg, ArgAction, Command, builder::ValueParser};
 use std::{fs, path::PathBuf};
 
 // alpahnumeric validator
@@ -18,10 +18,10 @@ pub fn validator_is_alphanumeric() -> ValueParser {
 
 pub fn validator_is_file() -> ValueParser {
     ValueParser::from(move |s: &str| -> std::result::Result<PathBuf, String> {
-        if let Ok(metadata) = fs::metadata(s) {
-            if metadata.is_file() {
-                return Ok(PathBuf::from(s));
-            }
+        if let Ok(metadata) = fs::metadata(s)
+            && metadata.is_file()
+        {
+            return Ok(PathBuf::from(s));
         }
 
         Err(format!("Invalid file path or file does not exist: '{s}'"))
@@ -30,10 +30,10 @@ pub fn validator_is_file() -> ValueParser {
 
 pub fn validator_is_dir() -> ValueParser {
     ValueParser::from(move |s: &str| -> std::result::Result<PathBuf, String> {
-        if let Ok(metadata) = fs::metadata(s) {
-            if metadata.is_dir() {
-                return Ok(PathBuf::from(s));
-            }
+        if let Ok(metadata) = fs::metadata(s)
+            && metadata.is_dir()
+        {
+            return Ok(PathBuf::from(s));
         }
 
         Err(format!(
@@ -95,7 +95,7 @@ mod tests {
             let m = cmd.try_get_matches_from(vec![c, name]);
 
             if should_succeed {
-                assert!(m.is_ok())
+                assert!(m.is_ok());
             } else {
                 assert!(m.is_err());
             }

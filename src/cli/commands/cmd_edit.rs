@@ -1,12 +1,12 @@
-use clap::{builder::ValueParser, Arg, ArgAction, Command};
+use clap::{Arg, ArgAction, Command, builder::ValueParser};
 use std::{fs, path::PathBuf};
 
 pub fn validator_is_file() -> ValueParser {
     ValueParser::from(move |s: &str| -> std::result::Result<PathBuf, String> {
-        if let Ok(metadata) = fs::metadata(s) {
-            if metadata.is_file() {
-                return Ok(PathBuf::from(s));
-            }
+        if let Ok(metadata) = fs::metadata(s)
+            && metadata.is_file()
+        {
+            return Ok(PathBuf::from(s));
         }
 
         Err(format!("Invalid file path or file does not exist: '{s}'"))
@@ -15,10 +15,10 @@ pub fn validator_is_file() -> ValueParser {
 
 pub fn validator_is_dir() -> ValueParser {
     ValueParser::from(move |s: &str| -> std::result::Result<PathBuf, String> {
-        if let Ok(metadata) = fs::metadata(s) {
-            if metadata.is_dir() {
-                return Ok(PathBuf::from(s));
-            }
+        if let Ok(metadata) = fs::metadata(s)
+            && metadata.is_dir()
+        {
+            return Ok(PathBuf::from(s));
         }
 
         Err(format!(

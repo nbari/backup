@@ -1,4 +1,4 @@
-use clap::{builder::NonEmptyStringValueParser, Arg, Command};
+use clap::{Arg, Command, builder::NonEmptyStringValueParser};
 
 pub fn command() -> Command {
     Command::new("run")
@@ -38,14 +38,15 @@ pub fn command() -> Command {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use anyhow::Result;
+
+    fn matches_for(args: &[&str]) -> Result<clap::ArgMatches> {
+        Ok(command().try_get_matches_from(args)?)
+    }
 
     #[test]
-    fn test_argumets_default() {
-        let cmd = command();
-        let m = cmd.try_get_matches_from(vec!["run", "test"]);
-        assert!(m.is_ok());
-
-        let matches = m.unwrap();
+    fn test_argumets_default() -> Result<()> {
+        let matches = matches_for(&["run", "test"])?;
         assert_eq!(
             matches.get_one::<String>("name").map(String::as_str),
             Some("test")
@@ -63,15 +64,12 @@ mod tests {
             Some(false)
         );
         assert_eq!(matches.get_one::<bool>("dry-run").copied(), Some(false));
+        Ok(())
     }
 
     #[test]
-    fn test_argumets_no_gitignore() {
-        let cmd = command();
-        let m = cmd.try_get_matches_from(vec!["run", "test", "--no-gitignore"]);
-        assert!(m.is_ok());
-
-        let matches = m.unwrap();
+    fn test_argumets_no_gitignore() -> Result<()> {
+        let matches = matches_for(&["run", "test", "--no-gitignore"])?;
         assert_eq!(
             matches.get_one::<String>("name").map(String::as_str),
             Some("test")
@@ -86,15 +84,12 @@ mod tests {
             Some(false)
         );
         assert_eq!(matches.get_one::<bool>("dry-run").copied(), Some(false));
+        Ok(())
     }
 
     #[test]
-    fn test_argumets_no_compression() {
-        let cmd = command();
-        let m = cmd.try_get_matches_from(vec!["run", "test", "--no-compression"]);
-        assert!(m.is_ok());
-
-        let matches = m.unwrap();
+    fn test_argumets_no_compression() -> Result<()> {
+        let matches = matches_for(&["run", "test", "--no-compression"])?;
         assert_eq!(
             matches.get_one::<String>("name").map(String::as_str),
             Some("test")
@@ -112,15 +107,12 @@ mod tests {
             Some(false)
         );
         assert_eq!(matches.get_one::<bool>("dry-run").copied(), Some(false));
+        Ok(())
     }
 
     #[test]
-    fn test_argumets_no_encryption() {
-        let cmd = command();
-        let m = cmd.try_get_matches_from(vec!["run", "test", "--no-encryption"]);
-        assert!(m.is_ok());
-
-        let matches = m.unwrap();
+    fn test_argumets_no_encryption() -> Result<()> {
+        let matches = matches_for(&["run", "test", "--no-encryption"])?;
         assert_eq!(
             matches.get_one::<String>("name").map(String::as_str),
             Some("test")
@@ -138,15 +130,12 @@ mod tests {
             Some(true)
         );
         assert_eq!(matches.get_one::<bool>("dry-run").copied(), Some(false));
+        Ok(())
     }
 
     #[test]
-    fn test_argumets_dry_run() {
-        let cmd = command();
-        let m = cmd.try_get_matches_from(vec!["run", "test", "--dry-run"]);
-        assert!(m.is_ok());
-
-        let matches = m.unwrap();
+    fn test_argumets_dry_run() -> Result<()> {
+        let matches = matches_for(&["run", "test", "--dry-run"])?;
         assert_eq!(
             matches.get_one::<String>("name").map(String::as_str),
             Some("test")
@@ -164,22 +153,19 @@ mod tests {
             Some(false)
         );
         assert_eq!(matches.get_one::<bool>("dry-run").copied(), Some(true));
+        Ok(())
     }
 
     #[test]
-    fn test_argumets_all() {
-        let cmd = command();
-        let m = cmd.try_get_matches_from(vec![
+    fn test_argumets_all() -> Result<()> {
+        let matches = matches_for(&[
             "run",
             "test",
             "--no-gitignore",
             "--no-compression",
             "--no-encryption",
             "--dry-run",
-        ]);
-        assert!(m.is_ok());
-
-        let matches = m.unwrap();
+        ])?;
         assert_eq!(
             matches.get_one::<String>("name").map(String::as_str),
             Some("test")
@@ -194,15 +180,12 @@ mod tests {
             Some(true)
         );
         assert_eq!(matches.get_one::<bool>("dry-run").copied(), Some(true));
+        Ok(())
     }
 
     #[test]
-    fn test_argumets_no_gitignore_and_no_compression() {
-        let cmd = command();
-        let m = cmd.try_get_matches_from(vec!["run", "test", "--no-gitignore", "--no-compression"]);
-        assert!(m.is_ok());
-
-        let matches = m.unwrap();
+    fn test_argumets_no_gitignore_and_no_compression() -> Result<()> {
+        let matches = matches_for(&["run", "test", "--no-gitignore", "--no-compression"])?;
         assert_eq!(
             matches.get_one::<String>("name").map(String::as_str),
             Some("test")
@@ -217,15 +200,12 @@ mod tests {
             Some(false)
         );
         assert_eq!(matches.get_one::<bool>("dry-run").copied(), Some(false));
+        Ok(())
     }
 
     #[test]
-    fn test_arguments_no_gitignore_and_no_dry_run() {
-        let cmd = command();
-        let m = cmd.try_get_matches_from(vec!["run", "test", "--no-gitignore", "--dry-run"]);
-        assert!(m.is_ok());
-
-        let matches = m.unwrap();
+    fn test_arguments_no_gitignore_and_no_dry_run() -> Result<()> {
+        let matches = matches_for(&["run", "test", "--no-gitignore", "--dry-run"])?;
         assert_eq!(
             matches.get_one::<String>("name").map(String::as_str),
             Some("test")
@@ -240,19 +220,18 @@ mod tests {
             Some(false)
         );
         assert_eq!(matches.get_one::<bool>("dry-run").copied(), Some(true));
+        Ok(())
     }
 
     #[test]
     fn test_arguments_invalid() {
-        let cmd = command();
-        let m = cmd.try_get_matches_from(vec!["run"]);
+        let m = command().try_get_matches_from(vec!["run"]);
         assert!(m.is_err());
     }
 
     #[test]
     fn test_arguments_invalid_name() {
-        let cmd = command();
-        let m = cmd.try_get_matches_from(vec!["run", ""]);
+        let m = command().try_get_matches_from(vec!["run", ""]);
         assert!(m.is_err());
     }
 }

@@ -3,18 +3,20 @@ use anyhow::{Context, Result};
 use std::{fs, path::PathBuf};
 
 pub fn get_config_path() -> Result<PathBuf> {
-    let home_dir = dirs::home_dir().map_or_else(|| PathBuf::from("/tmp"), |path| path);
+    let home_dir = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
 
     let config_path = home_dir.join(".backup");
     fs::create_dir_all(&config_path).context(format!(
         "failed to create config directory {}",
-        &config_path.display()
+        config_path.display()
     ))?;
 
     Ok(config_path)
 }
 
 /// Start the CLI
+/// # Errors
+/// Returns an error if configuration, telemetry setup, or command dispatch fails.
 pub fn start() -> Result<(Action, GlobalArgs)> {
     let config_path = get_config_path()?;
 
@@ -26,7 +28,6 @@ pub fn start() -> Result<(Action, GlobalArgs)> {
         0 => None,
         1 => Some(tracing::Level::INFO),
         2 => Some(tracing::Level::DEBUG),
-        3 => Some(tracing::Level::TRACE),
         _ => Some(tracing::Level::TRACE),
     };
 
@@ -41,8 +42,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_get_config_path() {
-        let config_path = get_config_path().unwrap();
-        assert_eq!(config_path, dirs::home_dir().unwrap().join(".backup"));
+    fn test_get_config_path() -> Result<()> {
+        let config_path = get_config_path()?;
+        let home_dir = dirs::home_dir().context("home directory not found")?;
+        assert_eq!(config_path, home_dir.join(".backup"));
+        Ok(())
     }
 }

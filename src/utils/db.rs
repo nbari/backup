@@ -1,9 +1,12 @@
-use anyhow::{anyhow, Result};
-use base64::{engine::general_purpose, Engine as _};
+use anyhow::{Result, anyhow};
+use base64::{Engine as _, engine::general_purpose};
 use rusqlite::Connection;
 use std::path::Path;
 use x25519_dalek::PublicKey;
 
+/// Read the backup public key from a `SQLite` database.
+/// # Errors
+/// Returns an error if the database cannot be read or the stored key is invalid.
 pub fn get_public_key(db_path: &Path) -> Result<PublicKey> {
     let conn = Connection::open(db_path)?;
 

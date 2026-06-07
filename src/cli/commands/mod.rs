@@ -4,8 +4,8 @@ pub mod cmd_run;
 pub mod cmd_show;
 
 use clap::{
-    builder::styling::{AnsiColor, Effects, Styles},
     Arg, ColorChoice, Command,
+    builder::styling::{AnsiColor, Effects, Styles},
 };
 use std::{env, path::PathBuf};
 
@@ -48,20 +48,26 @@ pub fn new(config_path: PathBuf) -> Command {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use anyhow::{Context, Result};
     use std::path::PathBuf;
 
     #[test]
-    fn test_new() {
+    fn test_new() -> Result<()> {
         let command = new(PathBuf::from("."));
 
         assert_eq!(command.get_name(), "backup");
         assert_eq!(
-            command.get_about().unwrap().to_string(),
+            command.get_about().context("missing about")?.to_string(),
             "Create compressed and encrypted backups"
         );
         assert_eq!(
-            command.get_version().unwrap().to_string(),
+            command
+                .get_version()
+                .context("missing version")?
+                .to_string(),
             env!("CARGO_PKG_VERSION")
         );
+
+        Ok(())
     }
 }

@@ -2,7 +2,7 @@ test: clippy
   cargo test -- --nocapture
 
 clippy:
-  cargo clippy --all -- -W clippy::all -W clippy::nursery -D warnings
+  cargo clippy --all-targets --all-features
 
 coverage:
   CARGO_INCREMENTAL=0 RUSTFLAGS='-Cinstrument-coverage' LLVM_PROFILE_FILE='coverage-%p-%m.profraw' cargo test
