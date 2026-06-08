@@ -13,6 +13,7 @@ pub struct CreateBackupRequest {
     pub config_dir: PathBuf,
     pub directories: Vec<PathBuf>,
     pub files: Vec<PathBuf>,
+    pub destinations: Vec<String>,
 }
 
 pub struct CreateBackupResult {
@@ -41,18 +42,18 @@ pub fn create(request: CreateBackupRequest) -> Result<CreateBackupResult> {
 
     debug!("Public Key: {:?}", hex::encode(public_key.as_bytes()));
 
-    catalog.save_public_key(&public_key)?;
-
     // Generate the naming key, seal it to the public key for at-rest recovery,
-    // and cache the plaintext in {name}.wkey so cron runs stay unattended.
+    // and cache the plaintext in {name}.wkey so cron runs stay unattended. The
+    // public key and the sealed naming key are written atomically.
     let naming_key = generate_naming_key();
     let sealed = seal_naming_key(&naming_key, &public_key)?;
-    catalog.save_sealed_naming_key(&sealed)?;
+    catalog.save_keys(&public_key, &sealed)?;
     wkey::write_naming_key(&request.config_dir, &request.name, &naming_key)?;
 
     let backup_dirs = get_unique_dir_parents(request.directories);
     catalog.save_directories(&backup_dirs)?;
     catalog.save_files(&request.files)?;
+    catalog.save_destinations(&request.destinations)?;
 
     Ok(CreateBackupResult {
         recovery_phrase: mnemonic.to_string(),
@@ -90,6 +91,7 @@ mod tests {
             config_dir: temp_dir.path().to_path_buf(),
             directories: Vec::new(),
             files: Vec::new(),
+            destinations: Vec::new(),
         })?;
 
         // The cache exists after create and holds a 32-byte naming key.
@@ -105,6 +107,11 @@ mod tests {
         let recovered = unseal_naming_key(&catalog.sealed_naming_key()?, &mnemonic)?;
 
         assert_eq!(*cached, *recovered);
+
+        // save_keys wrote both halves atomically: the public key reads back and
+        // matches the one derived from the recovery mnemonic.
+        let (_, expected_public) = content_keypair(&mnemonic)?;
+        assert_eq!(catalog.public_key()?.to_bytes(), expected_public.to_bytes());
 
         Ok(())
     }

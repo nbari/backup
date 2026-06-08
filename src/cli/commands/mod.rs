@@ -3,6 +3,7 @@ pub mod cmd_new;
 pub mod cmd_restore;
 pub mod cmd_run;
 pub mod cmd_show;
+pub mod cmd_verify;
 pub mod cmd_view;
 pub mod validators;
 
@@ -47,6 +48,7 @@ pub fn new(config_path: PathBuf) -> Command {
         .subcommand(cmd_restore::command())
         .subcommand(cmd_run::command())
         .subcommand(cmd_show::command())
+        .subcommand(cmd_verify::command())
         .subcommand(cmd_view::command())
 }
 

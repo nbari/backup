@@ -3,7 +3,6 @@ use crate::{
     engine::edit::{EditBackupRequest, EditBackupResult, edit},
 };
 use anyhow::Result;
-use std::path::PathBuf;
 
 /// Handle the edit action.
 ///
@@ -14,8 +13,10 @@ pub fn handle(action: Action, globals: &GlobalArgs) -> Result<()> {
         name,
         add_directories,
         add_files,
+        add_destinations,
         remove_directories,
         remove_files,
+        remove_destinations,
     } = action
     {
         let result = edit(EditBackupRequest {
@@ -23,8 +24,10 @@ pub fn handle(action: Action, globals: &GlobalArgs) -> Result<()> {
             config_dir: globals.home.clone(),
             add_directories,
             add_files,
+            add_destinations,
             remove_directories,
             remove_files,
+            remove_destinations,
         })?;
 
         if !globals.quiet {
@@ -37,11 +40,22 @@ pub fn handle(action: Action, globals: &GlobalArgs) -> Result<()> {
 
 fn print_config(name: &str, result: &EditBackupResult) {
     println!("Backup: {name}");
-    print_section("Directories", &result.directories);
-    print_section("Files", &result.files);
+    let dirs: Vec<String> = result
+        .directories
+        .iter()
+        .map(|p| p.display().to_string())
+        .collect();
+    let files: Vec<String> = result
+        .files
+        .iter()
+        .map(|p| p.display().to_string())
+        .collect();
+    print_section("Directories", &dirs);
+    print_section("Files", &files);
+    print_section("Destinations", &result.destinations);
 }
 
-fn print_section(label: &str, entries: &[PathBuf]) {
+fn print_section(label: &str, entries: &[String]) {
     if entries.is_empty() {
         return;
     }
@@ -55,6 +69,6 @@ fn print_section(label: &str, entries: &[PathBuf]) {
         } else {
             "├──"
         };
-        println!("  {prefix} {}", entry.display());
+        println!("  {prefix} {entry}");
     }
 }

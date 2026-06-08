@@ -68,11 +68,12 @@ fn write_owner_only(path: &Path, data: &[u8]) -> Result<()> {
     Ok(())
 }
 
+// `backup` targets unix only (Linux, macOS, FreeBSD). The naming-key cache must be
+// created with owner-only permissions, which relies on unix mode bits; rather than
+// ship a weaker file on other platforms, fail the build. Windows users can run it
+// under WSL.
 #[cfg(not(unix))]
-fn write_owner_only(path: &Path, data: &[u8]) -> Result<()> {
-    std::fs::write(path, data)?;
-    Ok(())
-}
+compile_error!("backup supports unix targets only (Linux, macOS, FreeBSD); use WSL on Windows");
 
 #[cfg(test)]
 mod tests {

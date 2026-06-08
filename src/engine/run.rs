@@ -1,21 +1,27 @@
 use crate::{
-    db::sqlite::{ScannedFile, SqliteCatalog},
-    utils::hash::blake3_keyed,
+    db::sqlite::{ScannedFile, SealedKeys, SqliteCatalog},
+    storage::local::LocalStore,
+    utils::{
+        crypto::seal_content,
+        hash::{blake3_keyed, blake3_keyed_bytes},
+    },
 };
 use anyhow::{Result, anyhow};
 use futures::stream::{FuturesUnordered, StreamExt};
 use ignore::WalkBuilder;
 use std::{
     cmp,
+    collections::HashSet,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Mutex, PoisonError},
 };
 use tokio::{
     fs::{OpenOptions, remove_file, write},
     io::{self, AsyncWriteExt},
     sync::Semaphore,
 };
-use tracing::{debug, instrument};
+use tracing::{debug, instrument, warn};
+use x25519_dalek::PublicKey;
 use zeroize::Zeroizing;
 
 /// Per-backup naming key shared across scan workers to key content identifiers.
@@ -31,8 +37,13 @@ pub enum RunProgress {
     FileFinished,
     MetadataFilesWritten(usize),
     MetadataWriteStarted(usize),
-    ProcessingFile { worker_id: usize, path: PathBuf },
+    ProcessingFile {
+        worker_id: usize,
+        path: PathBuf,
+    },
     WorkerFinished(usize),
+    /// Start of the compress/encrypt/store phase, with the number of new blobs.
+    StorePhaseStarted(usize),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -61,7 +72,12 @@ impl IgnoreRules {
 
 #[must_use]
 pub fn scan_worker_count() -> usize {
-    cmp::min((num_cpus::get_physical() - 2).max(1), u8::MAX as usize)
+    // Logical parallelism available to this process. `available_parallelism`
+    // returns a `NonZeroUsize` (always ≥ 1) and respects the CPU affinity mask;
+    // fall back to 1 if it can't be queried. Reserve 2 threads for the async
+    // runtime and main thread, and cap the worker-id space at `u8::MAX`.
+    let logical = std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
+    cmp::min(logical.saturating_sub(2).max(1), u8::MAX as usize)
 }
 
 pub struct RunBackupRequest {
@@ -78,6 +94,18 @@ pub struct RunBackupResult {
     pub scanned_files: usize,
     pub skipped_entries: usize,
     pub skipped_files_log: PathBuf,
+    /// Number of new content blobs sealed and written this run.
+    pub stored_blobs: usize,
+    /// Number of usable destinations the blobs were written to.
+    pub destination_count: usize,
+}
+
+/// Result of the upload phase.
+struct UploadOutcome {
+    sealed: SealedKeys,
+    storable: Vec<ScannedFile>,
+    stored_blobs: usize,
+    skipped: usize,
 }
 
 struct QueuedScan {
@@ -145,31 +173,27 @@ pub async fn run(request: RunBackupRequest) -> Result<RunBackupResult> {
         queued_scan.skipped_entries,
     )
     .await?;
-    let skipped_entries = scan_results.skipped_entries;
+    let mut skipped_entries = scan_results.skipped_entries;
     let scanned_file_count = scan_results.files.len();
 
+    let mut stored_blobs = 0;
+    let mut destination_count = 0;
+
     if !request.dry_run {
-        let catalog = catalog.clone();
-        let progress = request.progress.clone();
-        if let Some(progress) = &progress {
-            progress(RunProgress::MetadataWriteStarted(scanned_file_count));
-        }
-
-        tokio::task::spawn_blocking(move || {
-            let progress_callback = progress.as_ref().map(|progress| -> Box<dyn Fn(usize)> {
-                let progress = progress.clone();
-                Box::new(move |written| progress(RunProgress::MetadataFilesWritten(written)))
-            });
-
-            catalog.record_scan(
-                public_key,
-                backup_version,
-                &scan_results.files,
-                skipped_entries == 0,
-                progress_callback.as_deref(),
-            )
+        let (sb, dc, upload_skipped) = store_and_record(UploadCtx {
+            catalog: &catalog,
+            public_key,
+            naming_key: &request.naming_key,
+            files: &scan_results.files,
+            version: backup_version,
+            scan_skipped: skipped_entries,
+            skipped_files_log: &skipped_files_log,
+            progress: request.progress.as_ref(),
         })
-        .await??;
+        .await?;
+        stored_blobs = sb;
+        destination_count = dc;
+        skipped_entries += upload_skipped;
     }
 
     if skipped_entries == 0 {
@@ -181,7 +205,242 @@ pub async fn run(request: RunBackupRequest) -> Result<RunBackupResult> {
         scanned_files: scanned_file_count,
         skipped_entries,
         skipped_files_log,
+        stored_blobs,
+        destination_count,
     })
+}
+
+/// Inputs to [`store_and_record`].
+struct UploadCtx<'a> {
+    catalog: &'a SqliteCatalog,
+    public_key: PublicKey,
+    naming_key: &'a NamingKey,
+    files: &'a [ScannedFile],
+    version: i64,
+    scan_skipped: usize,
+    skipped_files_log: &'a Path,
+    progress: Option<&'a ProgressCallback>,
+}
+
+/// Seal + store new content to all destinations, then record the scan metadata.
+/// Returns `(stored_blobs, destination_count, upload_skipped)`.
+async fn store_and_record(ctx: UploadCtx<'_>) -> Result<(usize, usize, usize)> {
+    let UploadCtx {
+        catalog,
+        public_key,
+        naming_key,
+        files,
+        version,
+        scan_skipped,
+        skipped_files_log,
+        progress,
+    } = ctx;
+
+    // Build a store per usable (filesystem) destination; S3 is not wired yet.
+    let mut stores = Vec::new();
+    for dest in catalog.configured_destinations()? {
+        if dest.starts_with("s3://") {
+            warn!("S3 destination not yet supported, skipping: {dest}");
+        } else {
+            stores.push(LocalStore::new(dest));
+        }
+    }
+    let destination_count = stores.len();
+
+    // Upload phase: seal + store new content; metadata-only if no destinations.
+    let upload = if stores.is_empty() {
+        UploadOutcome {
+            sealed: SealedKeys::new(),
+            storable: files.to_vec(),
+            stored_blobs: 0,
+            skipped: 0,
+        }
+    } else {
+        upload_new_content(
+            catalog,
+            &stores,
+            public_key,
+            naming_key,
+            files,
+            skipped_files_log,
+            progress,
+        )
+        .await?
+    };
+    let stored_blobs = upload.stored_blobs;
+    let upload_skipped = upload.skipped;
+
+    let catalog = catalog.clone();
+    let progress = progress.cloned();
+    if let Some(progress) = &progress {
+        progress(RunProgress::MetadataWriteStarted(upload.storable.len()));
+    }
+
+    let sealed = upload.sealed;
+    let storable = upload.storable;
+    let close_missing = scan_skipped == 0 && upload_skipped == 0;
+    tokio::task::spawn_blocking(move || {
+        let progress_callback = progress.as_ref().map(|progress| -> Box<dyn Fn(usize)> {
+            let progress = progress.clone();
+            Box::new(move |written| progress(RunProgress::MetadataFilesWritten(written)))
+        });
+
+        catalog.record_scan(
+            public_key,
+            &sealed,
+            version,
+            &storable,
+            close_missing,
+            progress_callback.as_deref(),
+        )
+    })
+    .await??;
+
+    Ok((stored_blobs, destination_count, upload_skipped))
+}
+
+/// Seal + store every new content id (one not already in the catalog) to all
+/// destinations, in parallel with a bounded worker pool (same bound as scanning,
+/// so memory/CPU stay in check). Returns the wrapped keys to record and the files
+/// safe to record (those whose content didn't change since the scan).
+async fn upload_new_content(
+    catalog: &SqliteCatalog,
+    stores: &[LocalStore],
+    public_key: PublicKey,
+    naming_key: &NamingKey,
+    files: &[ScannedFile],
+    skipped_files_log: &Path,
+    progress: Option<&ProgressCallback>,
+) -> Result<UploadOutcome> {
+    // Distinct content ids not yet stored, with a source path to read. Load the
+    // set of already-stored ids in one query rather than a blocking catalog hit
+    // per scanned file (which would stall the async runtime on large backups).
+    let stored_ids: HashSet<String> = catalog.all_content_ids()?.into_iter().collect();
+    let mut seen = HashSet::new();
+    let mut new_content: Vec<(String, PathBuf)> = Vec::new();
+    for file in files {
+        if seen.insert(file.hash.clone()) && !stored_ids.contains(&file.hash) {
+            new_content.push((file.hash.clone(), file.path.clone()));
+        }
+    }
+
+    if let Some(progress) = progress {
+        progress(RunProgress::StorePhaseStarted(new_content.len()));
+    }
+
+    let worker_count = scan_worker_count();
+    let semaphore = Arc::new(Semaphore::new(worker_count));
+    let available_workers = new_worker_pool(worker_count);
+    let stores = Arc::new(stores.to_vec());
+
+    let tasks = FuturesUnordered::new();
+    for (hash, path) in new_content {
+        let semaphore = semaphore.clone();
+        let available_workers = available_workers.clone();
+        let stores = stores.clone();
+        let naming_key = naming_key.clone();
+        let log = skipped_files_log.to_path_buf();
+        let progress = progress.cloned();
+
+        tasks.push(tokio::spawn(async move {
+            let _permit = semaphore.acquire_owned().await?;
+            // `worker` releases its id to the pool on drop (incl. on panic/error).
+            let worker = acquire_worker_id(&available_workers)?;
+            if let Some(progress) = &progress {
+                progress(RunProgress::ProcessingFile {
+                    worker_id: worker.id(),
+                    path: path.clone(),
+                });
+            }
+
+            let result = seal_one(&stores, public_key, &naming_key, &hash, &path, &log).await;
+
+            if let Some(progress) = &progress {
+                progress(RunProgress::WorkerFinished(worker.id()));
+            }
+
+            result.map(|wrapped| (hash, wrapped))
+        }));
+    }
+
+    let mut sealed = SealedKeys::new();
+    let mut skipped_hashes = HashSet::new();
+    let mut tasks = tasks;
+    while let Some(joined) = tasks.next().await {
+        let (hash, wrapped) = joined??;
+        match wrapped {
+            Some(wrapped) => {
+                sealed.insert(hash, wrapped);
+            }
+            None => {
+                skipped_hashes.insert(hash);
+            }
+        }
+        if let Some(progress) = progress {
+            progress(RunProgress::FileFinished);
+        }
+    }
+
+    let stored_blobs = sealed.len();
+    let storable = files
+        .iter()
+        .filter(|file| !skipped_hashes.contains(&file.hash))
+        .cloned()
+        .collect();
+
+    Ok(UploadOutcome {
+        sealed,
+        storable,
+        stored_blobs,
+        skipped: skipped_hashes.len(),
+    })
+}
+
+/// Read, verify, compress+encrypt, and store one content id to every store.
+/// `Ok(None)` means the file was skipped (unreadable or changed since the scan).
+async fn seal_one(
+    stores: &[LocalStore],
+    public_key: PublicKey,
+    naming_key: &NamingKey,
+    hash: &str,
+    path: &Path,
+    skipped_files_log: &Path,
+) -> Result<Option<(Vec<u8>, [u8; 32])>> {
+    let bytes = match tokio::fs::read(path).await {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            log_skipped_entry(
+                skipped_files_log,
+                &format!("Read error for {}: {err}", path.display()),
+            )
+            .await?;
+            return Ok(None);
+        }
+    };
+
+    // Verify the bytes still match the scanned id (changed-during-backup).
+    if blake3_keyed_bytes(&bytes, naming_key) != hash {
+        log_skipped_entry(
+            skipped_files_log,
+            &format!("Changed during backup, skipped: {}", path.display()),
+        )
+        .await?;
+        return Ok(None);
+    }
+
+    let seal_id = hash.to_string();
+    let sealed =
+        tokio::task::spawn_blocking(move || seal_content(&bytes, &public_key, &seal_id)).await??;
+
+    // Write to every destination. If a later destination fails, earlier ones keep
+    // the blob: that's a tolerated orphan, not corruption — the run aborts before
+    // `record_scan`, so the version is never completed, a re-run overwrites the
+    // blob (LocalStore replaces), and a future `prune` reclaims any leftovers.
+    for store in stores {
+        store.put(hash, &sealed.blob).await?;
+    }
+
+    Ok(Some((sealed.wrapped_key, sealed.ephemeral_public_key)))
 }
 
 async fn queue_scan_tasks(
@@ -194,9 +453,7 @@ async fn queue_scan_tasks(
     let tasks = FuturesUnordered::new();
     let worker_count = scan_worker_count();
     let semaphore = Arc::new(Semaphore::new(worker_count));
-    let available_workers = Arc::new(tokio::sync::Mutex::new(
-        (1..=worker_count).rev().collect::<Vec<_>>(),
-    ));
+    let available_workers = new_worker_pool(worker_count);
     let mut queued_files = 0_usize;
     let mut skipped_entries = 0_usize;
 
@@ -220,13 +477,10 @@ async fn queue_scan_tasks(
 
                         tasks.push(tokio::spawn(async move {
                             let _permit = semaphore.acquire_owned().await?;
-                            let worker_id = acquire_worker_id(&available_workers).await?;
-                            let result =
-                                process_file(file_path, log_file, progress, worker_id, &naming_key)
-                                    .await;
-                            release_worker_id(&available_workers, worker_id).await;
-
-                            result
+                            // `worker` releases its id on drop (incl. on panic/error).
+                            let worker = acquire_worker_id(&available_workers)?;
+                            process_file(file_path, log_file, progress, worker.id(), &naming_key)
+                                .await
                         }));
                     } else {
                         log_skipped_entry(
@@ -252,16 +506,51 @@ async fn queue_scan_tasks(
     })
 }
 
-async fn acquire_worker_id(available_workers: &tokio::sync::Mutex<Vec<usize>>) -> Result<usize> {
-    available_workers
-        .lock()
-        .await
-        .pop()
-        .ok_or_else(|| anyhow!("No scan worker id available"))
+/// Pool of free worker ids (used only for labelling progress rows). A plain
+/// `std::sync::Mutex` is fine: the critical section is just a pop/push, never held
+/// across an `.await`.
+type WorkerPool = Arc<Mutex<Vec<usize>>>;
+
+#[must_use]
+fn new_worker_pool(worker_count: usize) -> WorkerPool {
+    Arc::new(Mutex::new((1..=worker_count).rev().collect()))
 }
 
-async fn release_worker_id(available_workers: &tokio::sync::Mutex<Vec<usize>>, worker_id: usize) {
-    available_workers.lock().await.push(worker_id);
+/// A borrowed worker id that returns itself to the pool on drop, so a panicking
+/// task can't leak its id (which would shrink the labelled-worker space on a retry
+/// within the same process).
+struct WorkerId {
+    id: usize,
+    pool: WorkerPool,
+}
+
+impl WorkerId {
+    fn id(&self) -> usize {
+        self.id
+    }
+}
+
+impl Drop for WorkerId {
+    fn drop(&mut self) {
+        // Recover from poisoning: the data (a Vec of ids) is still valid even if a
+        // previous holder panicked, and we never hold this lock across a panic point.
+        self.pool
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(self.id);
+    }
+}
+
+fn acquire_worker_id(pool: &WorkerPool) -> Result<WorkerId> {
+    let id = pool
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .pop()
+        .ok_or_else(|| anyhow!("No scan worker id available"))?;
+    Ok(WorkerId {
+        id,
+        pool: pool.clone(),
+    })
 }
 
 async fn collect_scan_results(
@@ -414,7 +703,9 @@ mod tests {
     use super::*;
     use crate::{
         db::sqlite::{RestoreEntry, SqliteCatalog},
-        utils::crypto::{content_keypair, decrypt, generate_naming_key, seal_naming_key},
+        utils::crypto::{
+            content_key_aad, content_keypair, decrypt, generate_naming_key, seal_naming_key,
+        },
     };
     use anyhow::Context;
     use bip39::{Language, Mnemonic};
@@ -461,6 +752,34 @@ mod tests {
     fn public_key() -> PublicKey {
         let private_key = StaticSecret::from([7_u8; 32]);
         PublicKey::from(&private_key)
+    }
+
+    #[test]
+    fn scan_worker_count_is_in_range() {
+        // Always at least one worker, never more than the worker-id space (u8).
+        let count = scan_worker_count();
+        assert!((1..=u8::MAX as usize).contains(&count));
+    }
+
+    #[test]
+    fn worker_id_guard_returns_id_to_pool_on_drop() -> Result<()> {
+        let pool = new_worker_pool(2);
+
+        let a = acquire_worker_id(&pool)?;
+        let b = acquire_worker_id(&pool)?;
+        let id_a = a.id();
+
+        // Pool exhausted while both guards are held.
+        assert!(acquire_worker_id(&pool).is_err());
+
+        // Dropping a guard returns its id; the next acquire reuses it.
+        drop(a);
+        let c = acquire_worker_id(&pool)?;
+        assert_eq!(c.id(), id_a);
+
+        drop(b);
+        drop(c);
+        Ok(())
     }
 
     fn recovery_keypair() -> Result<(Mnemonic, PublicKey)> {
@@ -598,8 +917,13 @@ mod tests {
         catalog: &SqliteCatalog,
         mnemonic: &Mnemonic,
     ) -> Result<()> {
-        let (encrypted_key, ephemeral_public_key) = catalog.first_wrapped_file_key()?;
-        let file_key = decrypt(&encrypted_key, &ephemeral_public_key, mnemonic)?;
+        let (hash, encrypted_key, ephemeral_public_key) = catalog.first_wrapped_file_key()?;
+        let file_key = decrypt(
+            &encrypted_key,
+            &ephemeral_public_key,
+            mnemonic,
+            &content_key_aad(&hash),
+        )?;
 
         assert_eq!(file_key.len(), 32);
 
@@ -852,7 +1176,14 @@ mod tests {
             })
             .collect::<Vec<_>>();
 
-        catalog.record_scan(public_key(), version, &scanned_files, true, None)
+        catalog.record_scan(
+            public_key(),
+            &SealedKeys::new(),
+            version,
+            &scanned_files,
+            true,
+            None,
+        )
     }
 
     fn restore_hashes(catalog: &SqliteCatalog, version: i64) -> Result<Vec<String>> {
@@ -1009,6 +1340,178 @@ mod tests {
         assert_eq!(restore_hashes(&catalog, 1)?, vec!["hash-a".to_string()]);
         assert_eq!(restore_hashes(&catalog, 2)?, vec!["hash-b".to_string()]);
         assert_eq!(restore_hashes(&catalog, 3)?, vec!["hash-a".to_string()]);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn run_stores_blobs_that_decrypt_and_dedup() -> Result<()> {
+        use crate::{
+            engine::{
+                create::{CreateBackupRequest, create},
+                wkey,
+            },
+            storage::local::LocalStore,
+            utils::crypto::open_content,
+        };
+
+        let tmp = tempfile::tempdir()?;
+        let cfg = tmp.path().join("cfg");
+        let src = tmp.path().join("src");
+        let dest = tmp.path().join("dest");
+        fs::create_dir_all(&cfg)?;
+        fs::create_dir_all(&src)?;
+
+        // Two files with identical content (dedup) + one distinct.
+        fs::write(src.join("a.txt"), b"hello world")?;
+        fs::write(src.join("b.txt"), b"hello world")?;
+        fs::write(src.join("c.txt"), b"different")?;
+
+        let created = create(CreateBackupRequest {
+            name: "t".to_string(),
+            config_dir: cfg.clone(),
+            directories: vec![src.clone()],
+            files: Vec::new(),
+            destinations: vec![dest.to_string_lossy().into_owned()],
+        })?;
+        let mnemonic = Mnemonic::parse_in_normalized(Language::English, &created.recovery_phrase)?;
+
+        let naming_key: NamingKey =
+            Arc::new(wkey::load_naming_key(&cfg, "t")?.ok_or_else(|| anyhow!("missing wkey"))?);
+
+        let result = run(RunBackupRequest {
+            name: "t".to_string(),
+            config_dir: cfg.clone(),
+            ignore_rules: IgnoreRules::backupignore_only(),
+            dry_run: false,
+            progress: None,
+            naming_key: naming_key.clone(),
+        })
+        .await?;
+
+        // Three files, two unique contents -> two stored blobs to one destination.
+        assert_eq!(result.scanned_files, 3);
+        assert_eq!(result.stored_blobs, 2);
+        assert_eq!(result.destination_count, 1);
+
+        // The stored blob for "hello world" decrypts byte-for-byte.
+        let id = blake3_keyed_bytes(b"hello world", &naming_key);
+        let store = LocalStore::new(&dest);
+        assert!(store.exists(&id).await?);
+
+        let catalog = SqliteCatalog::open(&cfg.join("t.db"))?;
+        let (wrapped, eph) = catalog
+            .wrapped_content_key(&id)?
+            .ok_or_else(|| anyhow!("no wrapped key for content"))?;
+        let key_vec = decrypt(&wrapped, &eph, &mnemonic, &content_key_aad(&id))?;
+        let key: [u8; 32] = key_vec
+            .as_slice()
+            .try_into()
+            .map_err(|_| anyhow!("bad key length"))?;
+        let blob = store.get(&id).await?;
+        let plaintext = open_content(&blob, &id, &key)?;
+        assert_eq!(plaintext.as_slice(), b"hello world");
+
+        // Re-run with no changes stores nothing new (dedup / idempotent).
+        let again = run(RunBackupRequest {
+            name: "t".to_string(),
+            config_dir: cfg.clone(),
+            ignore_rules: IgnoreRules::backupignore_only(),
+            dry_run: false,
+            progress: None,
+            naming_key,
+        })
+        .await?;
+        assert_eq!(again.stored_blobs, 0);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn run_overwrites_orphan_blob_from_interrupted_run() -> Result<()> {
+        use crate::{
+            engine::{
+                create::{CreateBackupRequest, create},
+                wkey,
+            },
+            storage::local::LocalStore,
+            utils::crypto::open_content,
+        };
+
+        let tmp = tempfile::tempdir()?;
+        let cfg = tmp.path().join("cfg");
+        let src = tmp.path().join("src");
+        let dest = tmp.path().join("dest");
+        fs::create_dir_all(&cfg)?;
+        fs::create_dir_all(&src)?;
+        fs::write(src.join("a.txt"), b"hello world")?;
+
+        let created = create(CreateBackupRequest {
+            name: "t".to_string(),
+            config_dir: cfg.clone(),
+            directories: vec![src.clone()],
+            files: Vec::new(),
+            destinations: vec![dest.to_string_lossy().into_owned()],
+        })?;
+        let mnemonic = Mnemonic::parse_in_normalized(Language::English, &created.recovery_phrase)?;
+        let naming_key: NamingKey =
+            Arc::new(wkey::load_naming_key(&cfg, "t")?.ok_or_else(|| anyhow!("missing wkey"))?);
+
+        // Simulate an interrupted run: an orphan blob exists at the content id
+        // (bytes from a lost key), but there is no Files row for it.
+        let id = blake3_keyed_bytes(b"hello world", &naming_key);
+        let store = LocalStore::new(&dest);
+        store.put(&id, b"garbage from a cancelled run").await?;
+
+        run(RunBackupRequest {
+            name: "t".to_string(),
+            config_dir: cfg.clone(),
+            ignore_rules: IgnoreRules::backupignore_only(),
+            dry_run: false,
+            progress: None,
+            naming_key,
+        })
+        .await?;
+
+        // The run must overwrite the orphan so the stored blob matches the key
+        // it recorded — i.e. it decrypts to the real content.
+        let catalog = SqliteCatalog::open(&cfg.join("t.db"))?;
+        let (wrapped, eph) = catalog
+            .wrapped_content_key(&id)?
+            .ok_or_else(|| anyhow!("no wrapped key"))?;
+        let key_vec = decrypt(&wrapped, &eph, &mnemonic, &content_key_aad(&id))?;
+        let key: [u8; 32] = key_vec
+            .as_slice()
+            .try_into()
+            .map_err(|_| anyhow!("bad key length"))?;
+        let blob = store.get(&id).await?;
+        let plaintext = open_content(&blob, &id, &key)?;
+        assert_eq!(plaintext.as_slice(), b"hello world");
+
+        Ok(())
+    }
+
+    #[test]
+    fn latest_version_only_returns_completed() -> Result<()> {
+        let (_temp_dir, catalog) = test_catalog()?;
+
+        // A created-but-not-recorded version (interrupted run) is not "latest".
+        let version = catalog.create_version()?;
+        assert_eq!(catalog.latest_version()?, None);
+
+        // Recording the scan marks it complete.
+        catalog.record_scan(
+            public_key(),
+            &SealedKeys::new(),
+            version,
+            &[ScannedFile {
+                path: PathBuf::from("/backup/a.txt"),
+                hash: "hash-a".to_string(),
+            }],
+            true,
+            None,
+        )?;
+        assert_eq!(catalog.latest_version()?, Some(version));
 
         Ok(())
     }

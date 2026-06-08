@@ -30,5 +30,11 @@ pub fn dispatch(matches: &ArgMatches) -> Result<Action> {
                 .cloned()
                 .collect::<Vec<_>>(),
         ),
+
+        destination: matches
+            .get_many::<String>("to")
+            .unwrap_or_default()
+            .cloned()
+            .collect(),
     })
 }

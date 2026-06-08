@@ -415,6 +415,7 @@ mod tests {
         let version = catalog.create_version()?;
         catalog.record_scan(
             public_key(),
+            &crate::db::sqlite::SealedKeys::new(),
             version,
             &[
                 scanned("/srv/a/x.txt", "h1"),
@@ -446,6 +447,7 @@ mod tests {
         let v1 = catalog.create_version()?;
         catalog.record_scan(
             public_key(),
+            &crate::db::sqlite::SealedKeys::new(),
             v1,
             &[scanned("/srv/a/x.txt", "h1")],
             true,
@@ -460,7 +462,14 @@ mod tests {
 
         // v2: the file is gone, so it is closed at v1.
         let v2 = catalog.create_version()?;
-        catalog.record_scan(public_key(), v2, &[], true, None)?;
+        catalog.record_scan(
+            public_key(),
+            &crate::db::sqlite::SealedKeys::new(),
+            v2,
+            &[],
+            true,
+            None,
+        )?;
 
         assert_eq!(
             catalog.file_path_at_version(id, v1)?,

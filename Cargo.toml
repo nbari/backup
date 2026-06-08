@@ -1,6 +1,6 @@
 [package]
 name = "backup"
-version = "0.0.13"
+version = "0.1.0"
 authors = ["Nicolas Embriz <nbari@tequila.io>"]
 description = "create encrypted backups"
 documentation = "https://github.com/nbari/backup"
@@ -56,7 +56,6 @@ hex = "0.4.3"
 hkdf = "0.12.4"
 ignore = "0.4.26"
 indicatif = "0.18.4"
-num_cpus = "1.17"
 r2d2 = "0.8.10"
 r2d2_sqlite = "0.31.0"
 rand = "0.9.4"
@@ -69,6 +68,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 x25519-dalek = { version = "2.0.1", features = ["getrandom", "static_secrets"] }
 zeroize = "1"
+zstd = "0.13.3"
 
 [package.metadata.generate-rpm]
 assets = [

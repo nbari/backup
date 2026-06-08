@@ -14,6 +14,7 @@ pub fn handle(action: Action) -> Result<()> {
         config,
         directory,
         file,
+        destination,
     } = action
     {
         let result = create(CreateBackupRequest {
@@ -21,6 +22,7 @@ pub fn handle(action: Action) -> Result<()> {
             config_dir: config,
             directories: directory.unwrap_or_default(),
             files: file.unwrap_or_default(),
+            destinations: destination,
         })?;
 
         print_recovery_phrase(&result.recovery_phrase);

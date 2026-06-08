@@ -9,6 +9,7 @@ pub struct BackupDefinition {
     pub name: String,
     pub directories: Vec<PathBuf>,
     pub files: Vec<PathBuf>,
+    pub destinations: Vec<String>,
 }
 
 /// List configured backups in a config directory.
@@ -31,6 +32,7 @@ pub fn list(config_dir: &Path) -> Result<Vec<BackupDefinition>> {
             name,
             directories: catalog.configured_directories()?,
             files: catalog.configured_files()?,
+            destinations: catalog.configured_destinations()?,
         });
     }
 

@@ -3,10 +3,11 @@
 `backup` is an early-stage Rust CLI for building a secure, content-addressable
 backup system.
 
-The current implementation is focused on the metadata engine and key
-management: scanning files, computing keyed content identifiers, detecting
-changes, tracking versions, and storing backup state in SQLite. File-content
-storage, encrypted blob uploads, and restore commands are not implemented yet.
+The implementation covers the metadata engine, key management, and the local
+write path: scanning files, computing keyed content identifiers, detecting
+changes, tracking versions, and **compressing, encrypting, and writing
+content-addressed blobs** to one or more filesystem destinations. Restore and
+remote (S3) backends are not implemented yet.
 
 ## Current status
 
@@ -22,14 +23,18 @@ Implemented:
 - detect new, changed, unchanged, and deleted files
 - store version history in SQLite
 - keep enough metadata to query historical snapshots
+- compress (zstd) + encrypt (ChaCha20-Poly1305) each new file's content and write
+  the blob to every configured filesystem destination, deduplicated by content id
+  (whole-file blobs)
+- verify stored blobs against the catalog and repair missing copies
+  (copy from a healthy destination, or re-seal from the source file)
 
 Not implemented yet:
 
-- copying file contents
-- encrypting file contents
-- uploading blobs
 - `restore` (the command exists as a placeholder but does not restore anything yet)
-- S3 or other storage backends
+- S3 or other remote storage backends (filesystem destinations work; S3 via `s3m`
+  is planned)
+- chunking / pack files / streaming (content is currently sealed as whole-file blobs)
 
 ## Usage
 
@@ -60,11 +65,24 @@ directories are collapsed to non-overlapping parents and any file now covered by
 a directory is dropped — the same rules `new` applies. Running `edit mybackup`
 with no flags just prints the current configuration.
 
-Run a scan:
+Run a backup:
 
 ```bash
 backup run mybackup
 ```
+
+`run` scans the configured paths and, for each new file content, **compresses
+(zstd), encrypts (ChaCha20-Poly1305), and writes a blob** to every configured
+destination, keyed by its content id (so identical content is stored once). With
+no destination set it records metadata only. Restore is not wired yet (the stored
+blobs are already decryptable — proven by tests). Current limits: whole-file
+blobs, filesystem destinations only (S3 via `s3m` is planned).
+
+A version is marked **complete** only when its metadata is committed (after all
+its blobs are stored), so an **interrupted run is safe**: it leaves an unfinished
+version that `view` ignores (showing the last completed snapshot), and a re-run
+re-stores any affected content correctly. Orphaned blobs from an interrupted run
+are harmless and will be reclaimed by a future `prune`.
 
 Routine runs read the local `<name>.wkey` cache and need no secret, so they work
 unattended (for example from `cron`). If that cache file is missing, `run`
@@ -98,6 +116,35 @@ filesystem/LVM/ZFS snapshot is taken). What this means in practice:
   **at the moment they are read** — a coherent snapshot of that file at that
   time, just not necessarily the instant `run` started. The next run picks up
   any later changes.
+
+Verify that stored data is still intact:
+
+```bash
+backup verify mybackup
+```
+
+`run` trusts the catalog when deciding what to upload, so a blob deleted directly
+from a destination (e.g. a botched sync, bit-rot cleanup, or an accidental `rm`)
+would otherwise go unnoticed. `verify` re-checks every destination against the
+catalog and reports any missing blob copies. It reads no secrets.
+
+Repair missing blobs with `--repair`:
+
+```bash
+backup verify mybackup --repair
+```
+
+For each missing blob, repair restores it the cheapest safe way:
+
+- **copy from a healthy destination** when another destination still has the blob
+  (the content key is unchanged, so all copies stay byte-identical), otherwise
+- **re-seal from the source file** when the blob is gone from *every* destination:
+  the original file is re-read, checked against its content id, re-encrypted with a
+  fresh key, written to all destinations, and the catalog key is updated. Re-sealing
+  reads the source files and may prompt for the recovery mnemonic.
+
+A blob that is gone from every destination **and** whose source file is missing or
+has changed cannot be recovered; `verify --repair` lists those content ids.
 
 Show configured backups:
 
@@ -144,25 +191,59 @@ are written to `~/.backup/<name>-skipped_files.log` when needed.
 
 ## Ignore rules
 
-By default, `backup run` reads `.backupignore` files and uses gitignore-style
-patterns:
+By default, `backup run` reads `.backupignore` files using **gitignore-style
+patterns** to exclude paths from the scan. Put a `.backupignore` in a backed-up
+directory; like `.gitignore`, it applies to that directory and everything below
+it (nested `.backupignore` files in subdirectories also apply).
+
+Syntax (same as `.gitignore`):
+
+- `name/` — a **trailing slash** matches directories only.
+- `target/` — **no leading slash** matches anywhere in the tree (every `target/`
+  at any depth).
+- `/target/` — a **leading slash anchors** to the directory containing the
+  `.backupignore` (only the top-level `target/`).
+- `*.log`, `**/cache/` — glob (`*`) and recursive (`**`) wildcards.
+- `# ...` — comment; blank lines are ignored.
+- `!keep.log` — `!` **negates** a previous pattern (re-include).
+
+### Example: Rust + Terraform
+
+A `.backupignore` that skips Rust build output and Terraform's local state and
+plugin cache:
 
 ```gitignore
+# Rust build artifacts (any crate, any depth)
 target/
-*.tmp
+
+# Terraform's regenerable plugin/module cache (re-created by `terraform init`)
+.terraform/
+
+# common regenerable noise
 node_modules/
+*.tmp
+*.log
 ```
 
-The `.backupignore` file itself is included in the scan unless it is explicitly
-ignored.
+Use `target/` (no leading slash) so it matches every crate's build dir in a
+workspace; use `/target/` if you only want to skip the one at the root. For a
+single project rooted at the repo, both behave the same.
 
-Use `.gitignore` rules in addition to `.backupignore`:
+Only ignore things you can **regenerate**. For example, don't blanket-ignore
+Terraform `*.tfstate` (it can be the source of truth for a local backend) or
+`.terraform.lock.hcl` (pins provider versions) — those are usually worth backing
+up.
+
+The `.backupignore` file itself is included in the scan unless a pattern
+explicitly ignores it.
+
+Also apply `.gitignore` rules on top of `.backupignore`:
 
 ```bash
 backup run mybackup --gitignore
 ```
 
-Disable ignore files completely:
+Disable all ignore files (back up everything):
 
 ```bash
 backup run mybackup --no-ignore
@@ -207,6 +288,13 @@ The goal is to support:
 
 SQLite is currently the authoritative metadata store. Storage backends should be
 blob repositories only; metadata should remain the source of truth.
+
+## Platform support
+
+`backup` targets **unix only — Linux, macOS, and FreeBSD**. It relies on unix file
+semantics (owner-only mode bits for the key cache, and the mode/uid/gid metadata the
+data model is built around), so Windows is not supported and the build fails there by
+design. Windows users can run it under WSL.
 
 ## Development
 

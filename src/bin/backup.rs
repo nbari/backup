@@ -15,6 +15,7 @@ async fn main() -> Result<()> {
         Action::View { .. } => actions::view::handle(action, &globals)?,
         Action::Edit { .. } => actions::edit::handle(action, &globals)?,
         Action::Restore { .. } => actions::restore::handle(action, &globals)?,
+        Action::Verify { .. } => actions::verify::handle(action, &globals).await?,
     }
 
     Ok(())

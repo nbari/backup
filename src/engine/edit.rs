@@ -13,13 +13,16 @@ pub struct EditBackupRequest {
     pub config_dir: PathBuf,
     pub add_directories: Vec<PathBuf>,
     pub add_files: Vec<PathBuf>,
+    pub add_destinations: Vec<String>,
     pub remove_directories: Vec<PathBuf>,
     pub remove_files: Vec<PathBuf>,
+    pub remove_destinations: Vec<String>,
 }
 
 pub struct EditBackupResult {
     pub directories: Vec<PathBuf>,
     pub files: Vec<PathBuf>,
+    pub destinations: Vec<String>,
 }
 
 /// Apply edits to a backup's configuration and return the resulting sets.
@@ -55,10 +58,22 @@ pub fn edit(request: EditBackupRequest) -> Result<EditBackupResult> {
     .filter(|file| !directories.iter().any(|dir| file.starts_with(dir)))
     .collect::<Vec<_>>();
 
+    // Destinations are independent targets (no parent/child collapsing).
+    let destinations = merge_strings(
+        catalog.configured_destinations()?,
+        request.add_destinations,
+        &request.remove_destinations,
+    );
+
     catalog.set_directories(&directories)?;
     catalog.set_files(&files)?;
+    catalog.set_destinations(&destinations)?;
 
-    Ok(EditBackupResult { directories, files })
+    Ok(EditBackupResult {
+        directories,
+        files,
+        destinations,
+    })
 }
 
 /// Combine `existing` with `add`, drop anything in `remove`, and de-duplicate
@@ -68,6 +83,19 @@ fn merge(existing: Vec<PathBuf>, add: Vec<PathBuf>, remove: &[PathBuf]) -> Vec<P
         .into_iter()
         .chain(add)
         .filter(|path| !remove.contains(path))
+        .collect();
+
+    result.sort();
+    result.dedup();
+    result
+}
+
+/// String variant of [`merge`] for destinations (which may be paths or S3 targets).
+fn merge_strings(existing: Vec<String>, add: Vec<String>, remove: &[String]) -> Vec<String> {
+    let mut result: Vec<String> = existing
+        .into_iter()
+        .chain(add)
+        .filter(|target| !remove.contains(target))
         .collect();
 
     result.sort();
@@ -89,6 +117,7 @@ mod tests {
             config_dir: temp_dir.path().to_path_buf(),
             directories: dirs.iter().map(PathBuf::from).collect(),
             files: files.iter().map(PathBuf::from).collect(),
+            destinations: Vec::new(),
         })?;
 
         Ok((temp_dir, name))
@@ -107,9 +136,31 @@ mod tests {
             config_dir: dir.to_path_buf(),
             add_directories: add_dirs.iter().map(PathBuf::from).collect(),
             add_files: add_files.iter().map(PathBuf::from).collect(),
+            add_destinations: Vec::new(),
             remove_directories: rm_dirs.iter().map(PathBuf::from).collect(),
             remove_files: rm_files.iter().map(PathBuf::from).collect(),
+            remove_destinations: Vec::new(),
         }
+    }
+
+    #[test]
+    fn add_and_remove_destinations() -> Result<()> {
+        let (temp_dir, name) = setup(&[], &[])?;
+
+        let mut req = request(temp_dir.path(), &name, &[], &[], &[], &[]);
+        req.add_destinations = vec!["/mnt/a".to_string(), "s3://bucket/x".to_string()];
+        let result = edit(req)?;
+        assert_eq!(
+            result.destinations,
+            vec!["/mnt/a".to_string(), "s3://bucket/x".to_string()]
+        );
+
+        let mut req = request(temp_dir.path(), &name, &[], &[], &[], &[]);
+        req.remove_destinations = vec!["/mnt/a".to_string()];
+        let result = edit(req)?;
+        assert_eq!(result.destinations, vec!["s3://bucket/x".to_string()]);
+
+        Ok(())
     }
 
     #[test]

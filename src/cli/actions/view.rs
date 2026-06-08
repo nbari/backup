@@ -39,7 +39,9 @@ fn list_tree(
     root: Option<&Path>,
 ) -> Result<()> {
     let Some(snapshot) = load_snapshot(&globals.home, name, version, root)? else {
-        println!("No snapshots recorded for \"{name}\". Run `backup run {name}` first.");
+        println!(
+            "No completed snapshot for \"{name}\" yet — run `backup run {name}` (a previous run may have been interrupted)."
+        );
         return Ok(());
     };
 

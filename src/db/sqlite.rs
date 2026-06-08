@@ -1,4 +1,4 @@
-use crate::utils::crypto::{encrypt, generate_file_key};
+use crate::utils::crypto::{content_key_aad, encrypt, generate_file_key};
 use anyhow::{Result, anyhow};
 use base64::{Engine as _, engine::general_purpose};
 use r2d2::Pool;
@@ -6,10 +6,16 @@ use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::{Connection, OptionalExtension, params};
 use std::{
     cmp,
+    collections::HashMap,
     path::{Path, PathBuf},
     sync::Arc,
 };
 use x25519_dalek::PublicKey;
+
+/// Wrapped content keys for newly-stored content, keyed by content id (hash):
+/// `hash -> (wrapped_key, ephemeral_public_key)`. Produced by the engine when it
+/// seals + uploads a blob, and recorded verbatim in `Files`.
+pub type SealedKeys = HashMap<String, (Vec<u8>, [u8; 32])>;
 
 #[derive(Clone, Debug)]
 pub struct ScannedFile {
@@ -51,9 +57,14 @@ impl SqliteCatalog {
     /// # Errors
     /// Returns an error if the connection pool cannot be created.
     pub fn open(db_path: &Path) -> Result<Self> {
+        let pool = create_connection_pool(db_path)?;
+        {
+            let conn = pool.get()?;
+            migrate(&conn)?;
+        }
         Ok(Self {
             db_path: db_path.to_path_buf(),
-            pool: create_connection_pool(db_path)?,
+            pool,
         })
     }
 
@@ -102,6 +113,35 @@ impl SqliteCatalog {
             "INSERT INTO Config (name, value) VALUES ('sealed_naming_key', ?1)",
             params![sealed_b64],
         )?;
+
+        Ok(())
+    }
+
+    /// Save the public key and the sealed naming key together in one transaction.
+    ///
+    /// Both are written at backup-creation time; doing it atomically avoids a
+    /// half-initialized catalog (public key present but naming key missing, or
+    /// vice versa) if the process dies mid-write. `INSERT OR REPLACE` keeps it
+    /// idempotent if creation is retried.
+    ///
+    /// # Errors
+    /// Returns an error if either key cannot be stored.
+    pub fn save_keys(&self, public_key: &PublicKey, sealed_naming_key: &[u8]) -> Result<()> {
+        let mut conn = self.pool.get()?;
+        let tx = conn.transaction()?;
+
+        let public_key_b64 = general_purpose::STANDARD.encode(public_key.as_bytes());
+        let sealed_b64 = general_purpose::STANDARD.encode(sealed_naming_key);
+        tx.execute(
+            "INSERT OR REPLACE INTO Config (name, value) VALUES ('public_key', ?1)",
+            params![public_key_b64],
+        )?;
+        tx.execute(
+            "INSERT OR REPLACE INTO Config (name, value) VALUES ('sealed_naming_key', ?1)",
+            params![sealed_b64],
+        )?;
+
+        tx.commit()?;
 
         Ok(())
     }
@@ -229,6 +269,133 @@ impl SqliteCatalog {
         configured_files(&conn)
     }
 
+    /// Whether content with this id already has a stored blob (a `Files` row).
+    ///
+    /// # Errors
+    /// Returns an error if the catalog cannot be queried.
+    pub fn is_stored(&self, hash: &str) -> Result<bool> {
+        let conn = self.pool.get()?;
+        Ok(get_file_id(&conn, hash)?.is_some())
+    }
+
+    /// Return the wrapped content key (`encrypted_key`, `ephemeral_public_key`)
+    /// for a content id — what restore needs to unwrap and decrypt the blob.
+    ///
+    /// # Errors
+    /// Returns an error if the catalog cannot be queried or the stored key is malformed.
+    pub fn wrapped_content_key(&self, hash: &str) -> Result<Option<(Vec<u8>, [u8; 32])>> {
+        let conn = self.pool.get()?;
+
+        let row = conn
+            .query_row(
+                "SELECT encrypted_key, ephemeral_public_key FROM Files WHERE hash = ?1",
+                params![hash],
+                |row| Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Vec<u8>>(1)?)),
+            )
+            .optional()?;
+
+        match row {
+            Some((wrapped, eph)) => {
+                let eph: [u8; 32] = eph
+                    .try_into()
+                    .map_err(|_| anyhow!("stored ephemeral public key has wrong length"))?;
+                Ok(Some((wrapped, eph)))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Return every stored content id (`Files.hash`).
+    ///
+    /// # Errors
+    /// Returns an error if the catalog cannot be queried.
+    pub fn all_content_ids(&self) -> Result<Vec<String>> {
+        let conn = self.pool.get()?;
+        let ids = conn
+            .prepare("SELECT hash FROM Files")?
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(ids)
+    }
+
+    /// Replace the wrapped content key for a content id (used by repair when a
+    /// blob is re-sealed with a fresh key).
+    ///
+    /// # Errors
+    /// Returns an error if the update fails.
+    pub fn update_content_key(&self, hash: &str, wrapped: &[u8], eph: &[u8; 32]) -> Result<()> {
+        let conn = self.pool.get()?;
+        let rows = conn.execute(
+            "UPDATE Files SET encrypted_key = ?2, ephemeral_public_key = ?3 WHERE hash = ?1",
+            params![hash, wrapped, eph.as_slice()],
+        )?;
+        // The caller re-sealed a blob with a fresh key; if no row matched, the new
+        // key would be silently dropped, leaving the blob unrecoverable. Fail loudly.
+        if rows != 1 {
+            return Err(anyhow!(
+                "update_content_key: expected 1 Files row for hash {hash}, updated {rows}"
+            ));
+        }
+        Ok(())
+    }
+
+    /// Save backup destinations (filesystem paths and/or S3 targets).
+    ///
+    /// # Errors
+    /// Returns an error if any destination cannot be stored.
+    pub fn save_destinations(&self, destinations: &[String]) -> Result<()> {
+        let mut conn = self.pool.get()?;
+        let tx = conn.transaction()?;
+
+        let mut stmt =
+            tx.prepare("INSERT OR IGNORE INTO config_destinations (target) VALUES (?1)")?;
+        for target in destinations {
+            stmt.execute(params![target])?;
+        }
+
+        drop(stmt);
+        tx.commit()?;
+
+        Ok(())
+    }
+
+    /// Replace the configured destinations with the given set.
+    ///
+    /// # Errors
+    /// Returns an error if the destinations cannot be stored.
+    pub fn set_destinations(&self, destinations: &[String]) -> Result<()> {
+        let mut conn = self.pool.get()?;
+        let tx = conn.transaction()?;
+
+        tx.execute("DELETE FROM config_destinations", [])?;
+
+        let mut stmt =
+            tx.prepare("INSERT OR IGNORE INTO config_destinations (target) VALUES (?1)")?;
+        for target in destinations {
+            stmt.execute(params![target])?;
+        }
+
+        drop(stmt);
+        tx.commit()?;
+
+        Ok(())
+    }
+
+    /// Return configured backup destinations.
+    ///
+    /// # Errors
+    /// Returns an error if the destinations cannot be read.
+    pub fn configured_destinations(&self) -> Result<Vec<String>> {
+        let conn = self.pool.get()?;
+
+        let destinations = conn
+            .prepare("SELECT target FROM config_destinations")?
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+
+        Ok(destinations)
+    }
+
     /// Create a backup version.
     ///
     /// # Errors
@@ -251,6 +418,7 @@ impl SqliteCatalog {
     pub fn record_scan(
         &self,
         public_key: PublicKey,
+        sealed_keys: &SealedKeys,
         version: i64,
         scanned_files: &[ScannedFile],
         close_missing_files: bool,
@@ -272,7 +440,7 @@ impl SqliteCatalog {
         let scanned_file_count = scanned_files.len();
 
         for (index, scanned_file) in scanned_files.iter().enumerate() {
-            upsert_scanned_file(&tx, public_key, version, scanned_file)?;
+            upsert_scanned_file(&tx, public_key, sealed_keys, version, scanned_file)?;
             if let Some(progress) = progress {
                 let written_files = index + 1;
                 if written_files == scanned_file_count || written_files % 100 == 0 {
@@ -284,6 +452,14 @@ impl SqliteCatalog {
         if close_missing_files {
             close_deleted_files(&tx, version)?;
         }
+
+        // Mark the version complete in the same transaction as its metadata, so
+        // "complete" means the metadata is committed (and, since uploads run
+        // first, all its blobs are stored). Interrupted runs never reach here.
+        tx.execute(
+            "UPDATE BackupVersions SET completed_at = strftime('%s', 'now') WHERE version_id = ?1",
+            params![version],
+        )?;
 
         tx.commit()?;
 
@@ -344,11 +520,11 @@ impl SqliteCatalog {
     pub fn latest_version(&self) -> Result<Option<i64>> {
         let conn = self.pool.get()?;
 
-        Ok(
-            conn.query_row("SELECT MAX(version_id) FROM BackupVersions", [], |row| {
-                row.get::<_, Option<i64>>(0)
-            })?,
-        )
+        Ok(conn.query_row(
+            "SELECT MAX(version_id) FROM BackupVersions WHERE completed_at IS NOT NULL",
+            [],
+            |row| row.get::<_, Option<i64>>(0),
+        )?)
     }
 
     /// Return the unix timestamp (seconds) a version was recorded.
@@ -438,19 +614,20 @@ impl SqliteCatalog {
     /// # Errors
     /// Returns an error if file key metadata cannot be read.
     #[cfg(test)]
-    pub(crate) fn first_wrapped_file_key(&self) -> Result<(Vec<u8>, [u8; 32])> {
+    pub(crate) fn first_wrapped_file_key(&self) -> Result<(String, Vec<u8>, [u8; 32])> {
         let conn = self.pool.get()?;
-        let (encrypted_key, ephemeral_public_key): (Vec<u8>, Vec<u8>) = conn.query_row(
-            "SELECT encrypted_key, ephemeral_public_key FROM Files LIMIT 1",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )?;
+        let (hash, encrypted_key, ephemeral_public_key): (String, Vec<u8>, Vec<u8>) = conn
+            .query_row(
+                "SELECT hash, encrypted_key, ephemeral_public_key FROM Files LIMIT 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?;
 
         let ephemeral_public_key = ephemeral_public_key
             .try_into()
             .map_err(|_| anyhow!("Invalid ephemeral public key length"))?;
 
-        Ok((encrypted_key, ephemeral_public_key))
+        Ok((hash, encrypted_key, ephemeral_public_key))
     }
 }
 
@@ -494,9 +671,12 @@ pub fn create_metadata_schema(db_path: &Path) -> Result<()> {
             UNIQUE(path_id, name, first_version)
         );
 
+        -- timestamp and completed_at are Unix seconds (INTEGER), matching how
+        -- create_version writes them via strftime('%s','now').
         CREATE TABLE IF NOT EXISTS BackupVersions (
             version_id INTEGER PRIMARY KEY,
-            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+            timestamp INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+            completed_at INTEGER
         );
 
         CREATE TABLE IF NOT EXISTS config_directories (
@@ -509,6 +689,11 @@ pub fn create_metadata_schema(db_path: &Path) -> Result<()> {
             path TEXT NOT NULL UNIQUE
         );
 
+        CREATE TABLE IF NOT EXISTS config_destinations (
+            id INTEGER PRIMARY KEY,
+            target TEXT NOT NULL UNIQUE
+        );
+
         CREATE INDEX IF NOT EXISTS idx_files_version
             ON FileNames(first_version, last_version);
 
@@ -519,6 +704,41 @@ pub fn create_metadata_schema(db_path: &Path) -> Result<()> {
         CREATE INDEX IF NOT EXISTS idx_filenames_path_history
             ON FileNames(path_id, name, first_version, last_version);",
     )?;
+
+    Ok(())
+}
+
+/// Apply lightweight, idempotent migrations to an existing catalog.
+///
+/// # Errors
+/// Returns an error if a migration statement fails.
+fn migrate(conn: &Connection) -> Result<()> {
+    // Add `BackupVersions.completed_at` to older catalogs that lack it, and
+    // backfill existing non-empty versions as complete (they predate the flag).
+    let has_completed = conn
+        .prepare("PRAGMA table_info(BackupVersions)")?
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<rusqlite::Result<Vec<String>>>()?
+        .iter()
+        .any(|name| name == "completed_at");
+
+    if !has_completed {
+        conn.execute(
+            "ALTER TABLE BackupVersions ADD COLUMN completed_at INTEGER",
+            [],
+        )?;
+        conn.execute(
+            "UPDATE BackupVersions SET completed_at = timestamp
+             WHERE completed_at IS NULL
+               AND EXISTS (
+                   SELECT 1 FROM FileNames
+                   WHERE FileNames.first_version <= BackupVersions.version_id
+                     AND (FileNames.last_version IS NULL
+                          OR FileNames.last_version >= BackupVersions.version_id)
+               )",
+            [],
+        )?;
+    }
 
     Ok(())
 }
@@ -556,7 +776,10 @@ fn create_connection_pool(db_file: &Path) -> Result<Arc<Pool<SqliteConnectionMan
         )
     });
 
-    let pool_size = u32::try_from(cmp::min(num_cpus::get_physical(), 32))?;
+    // One connection per logical CPU (falling back to 1), capped at 32. SQLite
+    // serializes writers under WAL, so a larger pool mainly helps concurrent reads.
+    let logical = std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
+    let pool_size = u32::try_from(cmp::min(logical, 32))?;
 
     Ok(Arc::new(
         Pool::builder().max_size(pool_size).build(manager)?,
@@ -667,6 +890,7 @@ fn view_entries(conn: &Connection, version: i64, root: Option<&Path>) -> Result<
 fn upsert_scanned_file(
     conn: &Connection,
     public_key: PublicKey,
+    sealed_keys: &SealedKeys,
     version: i64,
     scanned_file: &ScannedFile,
 ) -> Result<()> {
@@ -685,7 +909,7 @@ fn upsert_scanned_file(
         .to_string();
 
     let path_id = get_or_insert_path(conn, &path)?;
-    let file_id = get_or_insert_file(conn, &scanned_file.hash, public_key)?;
+    let file_id = get_or_insert_file(conn, &scanned_file.hash, public_key, sealed_keys)?;
 
     conn.execute(
         "INSERT OR IGNORE INTO seen_files (path_id, name)
@@ -726,12 +950,22 @@ fn get_or_insert_path(conn: &Connection, path: &str) -> Result<i64> {
     Ok(stmt.query_row(params![path], |row| row.get(0))?)
 }
 
-fn get_or_insert_file(conn: &Connection, hash: &str, public_key: PublicKey) -> Result<i64> {
+fn get_or_insert_file(
+    conn: &Connection,
+    hash: &str,
+    public_key: PublicKey,
+    sealed_keys: &SealedKeys,
+) -> Result<i64> {
     if let Some(file_id) = get_file_id(conn, hash)? {
         return Ok(file_id);
     }
 
-    let (wrapped, e_public) = encrypted_file_key(public_key)?;
+    // Prefer the wrapped key the engine produced when it sealed+stored the blob;
+    // fall back to generating one for metadata-only runs (no destinations).
+    let (wrapped, e_public) = match sealed_keys.get(hash) {
+        Some((wrapped, e_public)) => (wrapped.clone(), *e_public),
+        None => encrypted_file_key(public_key, hash)?,
+    };
 
     conn.execute(
         "INSERT INTO Files (hash, encrypted_key, ephemeral_public_key)
@@ -749,9 +983,9 @@ fn get_file_id(conn: &Connection, hash: &str) -> Result<Option<i64>> {
     rows.next()?.map_or(Ok(None), |row| Ok(Some(row.get(0)?)))
 }
 
-fn encrypted_file_key(public_key: PublicKey) -> Result<(Vec<u8>, [u8; 32])> {
+fn encrypted_file_key(public_key: PublicKey, hash: &str) -> Result<(Vec<u8>, [u8; 32])> {
     let file_key = generate_file_key();
-    encrypt(&file_key, &public_key)
+    encrypt(&file_key, &public_key, &content_key_aad(hash))
 }
 
 fn get_active_file_id(conn: &Connection, path_id: i64, file_name: &str) -> Result<Option<i64>> {

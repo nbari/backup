@@ -85,6 +85,20 @@ impl RunProgressRenderer {
                     }
                 }
             }
+            RunProgress::StorePhaseStarted(total_blobs) => match u64::try_from(total_blobs) {
+                Ok(total_blobs) => {
+                    spinner.set_length(total_blobs);
+                    spinner.set_position(0);
+                    if total_blobs == 0 {
+                        spinner.set_message("No new data to store");
+                    } else {
+                        spinner.set_message("Compressing & encrypting");
+                    }
+                }
+                Err(err) => {
+                    spinner.set_message(format!("Unable to display store total: {err}"));
+                }
+            },
             RunProgress::MetadataWriteStarted(total_files) => match u64::try_from(total_files) {
                 Ok(total_files) => {
                     spinner.set_length(total_files);
@@ -151,7 +165,7 @@ fn progress_renderer(quiet: bool) -> Result<Option<RunProgressRenderer>> {
 /// mnemonic, the naming key is unsealed from the catalog, and the cache is
 /// rewritten. Deleting `{name}.wkey` therefore both forces this prompt and acts
 /// as a self-test that the mnemonic can unlock the backup.
-fn resolve_naming_key(config_dir: &Path, name: &str) -> Result<NamingKey> {
+pub(crate) fn resolve_naming_key(config_dir: &Path, name: &str) -> Result<NamingKey> {
     if let Some(naming_key) = wkey::load_naming_key(config_dir, name)? {
         return Ok(Arc::new(naming_key));
     }
@@ -191,8 +205,6 @@ pub async fn handle(action: Action, globals: GlobalArgs) -> Result<()> {
         name,
         gitignore,
         no_ignore,
-        no_compression: _,
-        no_encryption: _,
         dry_run,
     } = action
     {
@@ -208,6 +220,7 @@ pub async fn handle(action: Action, globals: GlobalArgs) -> Result<()> {
         // Resolve the naming key before rendering progress, since unlocking may
         // prompt for the mnemonic interactively.
         let naming_key = resolve_naming_key(&globals.home, &name)?;
+        let backup_name = name.clone();
 
         let progress = progress_renderer(globals.quiet)?;
         let progress_callback = progress.as_ref().map(RunProgressRenderer::callback);
@@ -237,6 +250,19 @@ pub async fn handle(action: Action, globals: GlobalArgs) -> Result<()> {
         }
 
         if !globals.quiet {
+            if !dry_run {
+                if result.destination_count == 0 {
+                    println!(
+                        "No destinations configured — recorded metadata only (no data stored). Add one with `backup edit {backup_name} --to <path>`."
+                    );
+                } else {
+                    println!(
+                        "Stored {} new object(s) to {} destination(s).",
+                        result.stored_blobs, result.destination_count
+                    );
+                }
+            }
+
             println!(
                 "Backup{} version: {}\n",
                 if dry_run { " (dry-run)" } else { "" },

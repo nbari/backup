@@ -1,5 +1,5 @@
 use crate::cli::commands::validators;
-use clap::{Arg, ArgAction, Command};
+use clap::{Arg, ArgAction, Command, builder::NonEmptyStringValueParser};
 
 pub fn command() -> Command {
     Command::new("new")
@@ -15,7 +15,7 @@ pub fn command() -> Command {
                 .action(ArgAction::Append)
                 .short('d')
                 .long("dir")
-                .help("Add a directory to the backup")
+                .help("Add a directory to the backup (repeatable)")
                 .value_parser(validators::is_dir()),
         )
         .arg(
@@ -23,8 +23,16 @@ pub fn command() -> Command {
                 .action(ArgAction::Append)
                 .short('f')
                 .long("file")
-                .help("Add a file to the backup")
+                .help("Add a file to the backup (repeatable)")
                 .value_parser(validators::is_file()),
+        )
+        .arg(
+            Arg::new("to")
+                .action(ArgAction::Append)
+                .short('t')
+                .long("to")
+                .help("Add a destination to store the backup (path or S3 target); repeatable")
+                .value_parser(NonEmptyStringValueParser::new()),
         )
 }
 
@@ -59,5 +67,24 @@ mod tests {
                 assert!(m.is_err());
             }
         }
+    }
+
+    #[test]
+    fn to_is_repeatable_and_not_existence_checked() -> anyhow::Result<()> {
+        // Destinations need not exist (e.g. an S3 URL or a yet-to-be-created path).
+        let matches = command().try_get_matches_from(vec![
+            "new",
+            "demo",
+            "-t",
+            "/mnt/a",
+            "--to",
+            "s3://bucket/x",
+        ])?;
+        let dests: Vec<&String> = matches
+            .get_many::<String>("to")
+            .unwrap_or_default()
+            .collect();
+        assert_eq!(dests, vec!["/mnt/a", "s3://bucket/x"]);
+        Ok(())
     }
 }

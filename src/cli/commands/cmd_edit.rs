@@ -3,7 +3,7 @@ use clap::{Arg, ArgAction, Command, builder::NonEmptyStringValueParser};
 
 pub fn command() -> Command {
     Command::new("edit")
-        .about("Edit a backup configuration (add or remove directories and files)")
+        .about("Edit a backup configuration (add or remove directories, files and destinations)")
         .arg(
             Arg::new("name")
                 .help("Name of the backup configuration")
@@ -15,7 +15,7 @@ pub fn command() -> Command {
                 .action(ArgAction::Append)
                 .short('d')
                 .long("dir")
-                .help("Add a directory to the backup")
+                .help("Add a directory to the backup (repeatable)")
                 .value_parser(validators::is_dir()),
         )
         .arg(
@@ -23,8 +23,16 @@ pub fn command() -> Command {
                 .action(ArgAction::Append)
                 .short('f')
                 .long("file")
-                .help("Add a file to the backup")
+                .help("Add a file to the backup (repeatable)")
                 .value_parser(validators::is_file()),
+        )
+        .arg(
+            Arg::new("to")
+                .action(ArgAction::Append)
+                .short('t')
+                .long("to")
+                .help("Add a destination (path or S3 target) (repeatable)")
+                .value_parser(NonEmptyStringValueParser::new()),
         )
         .arg(
             Arg::new("rm-dir")
@@ -38,6 +46,13 @@ pub fn command() -> Command {
                 .action(ArgAction::Append)
                 .long("rm-file")
                 .help("Remove a configured file (path need not exist)")
+                .value_parser(NonEmptyStringValueParser::new()),
+        )
+        .arg(
+            Arg::new("rm-to")
+                .action(ArgAction::Append)
+                .long("rm-to")
+                .help("Remove a configured destination")
                 .value_parser(NonEmptyStringValueParser::new()),
         )
 }
@@ -91,6 +106,31 @@ mod tests {
             .unwrap_or_default()
             .count();
         assert_eq!(count, 2);
+        Ok(())
+    }
+
+    #[test]
+    fn destination_add_and_remove_parse() -> Result<()> {
+        let matches = matches_for(&[
+            "edit",
+            "demo",
+            "-t",
+            "/mnt/a",
+            "--to",
+            "s3://bucket/x",
+            "--rm-to",
+            "/old",
+        ])?;
+        let add: Vec<&String> = matches
+            .get_many::<String>("to")
+            .unwrap_or_default()
+            .collect();
+        let rm: Vec<&String> = matches
+            .get_many::<String>("rm-to")
+            .unwrap_or_default()
+            .collect();
+        assert_eq!(add, vec!["/mnt/a", "s3://bucket/x"]);
+        assert_eq!(rm, vec!["/old"]);
         Ok(())
     }
 }

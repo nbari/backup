@@ -25,6 +25,16 @@ pub fn blake3_keyed(file_path: &Path, key: &[u8; 32]) -> Result<String> {
     hash_file(file_path, &mut blake3::Hasher::new_keyed(key))
 }
 
+/// Keyed BLAKE3 content identifier of an in-memory buffer (same keying as
+/// [`blake3_keyed`]). Lets callers verify re-read bytes against a scanned id
+/// without another disk read.
+#[must_use]
+pub fn blake3_keyed_bytes(bytes: &[u8], key: &[u8; 32]) -> String {
+    let mut hasher = blake3::Hasher::new_keyed(key);
+    hasher.update(bytes);
+    hasher.finalize().to_hex().to_string()
+}
+
 fn hash_file(file_path: &Path, hasher: &mut blake3::Hasher) -> Result<String> {
     let mut file = std::fs::File::open(file_path)?;
     let mut buf = vec![0_u8; 65_536].into_boxed_slice();

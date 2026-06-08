@@ -28,6 +28,11 @@ pub fn handle(globals: &GlobalArgs) -> Result<()> {
             print_tree("Files", &backup.files, 2);
         }
 
+        if !backup.destinations.is_empty() {
+            println!();
+            print_targets("Destinations", &backup.destinations, 2);
+        }
+
         if backup_iter.peek().is_some() {
             println!();
         }
@@ -52,5 +57,18 @@ fn print_tree(label: &str, entries: &[PathBuf], indent: usize) {
             entry.display(),
             indent = indent
         );
+    }
+}
+
+fn print_targets(label: &str, entries: &[String], indent: usize) {
+    println!("{:indent$}{}:", "", label, indent = indent);
+
+    let mut iter = entries.iter().peekable();
+
+    while let Some(entry) = iter.next() {
+        let is_last = iter.peek().is_none();
+        let prefix = if is_last { "└──" } else { "├──" };
+
+        println!("{:indent$}{} {}", "", prefix, entry, indent = indent);
     }
 }

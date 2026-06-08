@@ -24,18 +24,6 @@ pub fn command() -> Command {
                 .action(ArgAction::SetTrue),
         )
         .arg(
-            Arg::new("no-compression")
-                .long("no-compression")
-                .help("Do not compress the backup")
-                .action(ArgAction::SetTrue),
-        )
-        .arg(
-            Arg::new("no-encryption")
-                .long("no-encryption")
-                .help("Do not encrypt the backup")
-                .action(ArgAction::SetTrue),
-        )
-        .arg(
             Arg::new("dry-run")
                 .long("dry-run")
                 .help("Do not create the backup, only show what would be done")
@@ -61,14 +49,6 @@ mod tests {
         );
         assert_eq!(matches.get_one::<bool>("gitignore").copied(), Some(false));
         assert_eq!(matches.get_one::<bool>("no-ignore").copied(), Some(false));
-        assert_eq!(
-            matches.get_one::<bool>("no-compression").copied(),
-            Some(false)
-        );
-        assert_eq!(
-            matches.get_one::<bool>("no-encryption").copied(),
-            Some(false)
-        );
         assert_eq!(matches.get_one::<bool>("dry-run").copied(), Some(false));
         Ok(())
     }
@@ -76,188 +56,41 @@ mod tests {
     #[test]
     fn test_argumets_gitignore() -> Result<()> {
         let matches = matches_for(&["run", "test", "--gitignore"])?;
-        assert_eq!(
-            matches.get_one::<String>("name").map(String::as_str),
-            Some("test")
-        );
         assert_eq!(matches.get_one::<bool>("gitignore").copied(), Some(true));
         assert_eq!(matches.get_one::<bool>("no-ignore").copied(), Some(false));
-        assert_eq!(
-            matches.get_one::<bool>("no-compression").copied(),
-            Some(false)
-        );
-        assert_eq!(
-            matches.get_one::<bool>("no-encryption").copied(),
-            Some(false)
-        );
-        assert_eq!(matches.get_one::<bool>("dry-run").copied(), Some(false));
         Ok(())
     }
 
     #[test]
     fn test_argumets_no_ignore() -> Result<()> {
         let matches = matches_for(&["run", "test", "--no-ignore"])?;
-        assert_eq!(
-            matches.get_one::<String>("name").map(String::as_str),
-            Some("test")
-        );
-        assert_eq!(matches.get_one::<bool>("gitignore").copied(), Some(false));
         assert_eq!(matches.get_one::<bool>("no-ignore").copied(), Some(true));
-        assert_eq!(
-            matches.get_one::<bool>("no-compression").copied(),
-            Some(false)
-        );
-        assert_eq!(
-            matches.get_one::<bool>("no-encryption").copied(),
-            Some(false)
-        );
-        assert_eq!(matches.get_one::<bool>("dry-run").copied(), Some(false));
-        Ok(())
-    }
-
-    #[test]
-    fn test_argumets_no_compression() -> Result<()> {
-        let matches = matches_for(&["run", "test", "--no-compression"])?;
-        assert_eq!(
-            matches.get_one::<String>("name").map(String::as_str),
-            Some("test")
-        );
-        assert_eq!(matches.get_one::<bool>("gitignore").copied(), Some(false));
-        assert_eq!(matches.get_one::<bool>("no-ignore").copied(), Some(false));
-        assert_eq!(
-            matches.get_one::<bool>("no-compression").copied(),
-            Some(true)
-        );
-        assert_eq!(
-            matches.get_one::<bool>("no-encryption").copied(),
-            Some(false)
-        );
-        assert_eq!(matches.get_one::<bool>("dry-run").copied(), Some(false));
-        Ok(())
-    }
-
-    #[test]
-    fn test_argumets_no_encryption() -> Result<()> {
-        let matches = matches_for(&["run", "test", "--no-encryption"])?;
-        assert_eq!(
-            matches.get_one::<String>("name").map(String::as_str),
-            Some("test")
-        );
-        assert_eq!(matches.get_one::<bool>("gitignore").copied(), Some(false));
-        assert_eq!(matches.get_one::<bool>("no-ignore").copied(), Some(false));
-        assert_eq!(
-            matches.get_one::<bool>("no-compression").copied(),
-            Some(false)
-        );
-        assert_eq!(
-            matches.get_one::<bool>("no-encryption").copied(),
-            Some(true)
-        );
-        assert_eq!(matches.get_one::<bool>("dry-run").copied(), Some(false));
         Ok(())
     }
 
     #[test]
     fn test_argumets_dry_run() -> Result<()> {
         let matches = matches_for(&["run", "test", "--dry-run"])?;
-        assert_eq!(
-            matches.get_one::<String>("name").map(String::as_str),
-            Some("test")
-        );
-        assert_eq!(matches.get_one::<bool>("gitignore").copied(), Some(false));
-        assert_eq!(matches.get_one::<bool>("no-ignore").copied(), Some(false));
-        assert_eq!(
-            matches.get_one::<bool>("no-compression").copied(),
-            Some(false)
-        );
-        assert_eq!(
-            matches.get_one::<bool>("no-encryption").copied(),
-            Some(false)
-        );
         assert_eq!(matches.get_one::<bool>("dry-run").copied(), Some(true));
         Ok(())
     }
 
     #[test]
-    fn test_argumets_all() -> Result<()> {
-        let matches = matches_for(&[
-            "run",
-            "test",
-            "--gitignore",
-            "--no-compression",
-            "--no-encryption",
-            "--dry-run",
-        ])?;
-        assert_eq!(
-            matches.get_one::<String>("name").map(String::as_str),
-            Some("test")
-        );
-        assert_eq!(matches.get_one::<bool>("gitignore").copied(), Some(true));
-        assert_eq!(matches.get_one::<bool>("no-ignore").copied(), Some(false));
-        assert_eq!(
-            matches.get_one::<bool>("no-compression").copied(),
-            Some(true)
-        );
-        assert_eq!(
-            matches.get_one::<bool>("no-encryption").copied(),
-            Some(true)
-        );
-        assert_eq!(matches.get_one::<bool>("dry-run").copied(), Some(true));
-        Ok(())
-    }
-
-    #[test]
-    fn test_argumets_no_ignore_and_no_compression() -> Result<()> {
-        let matches = matches_for(&["run", "test", "--no-ignore", "--no-compression"])?;
-        assert_eq!(
-            matches.get_one::<String>("name").map(String::as_str),
-            Some("test")
-        );
-        assert_eq!(matches.get_one::<bool>("gitignore").copied(), Some(false));
-        assert_eq!(matches.get_one::<bool>("no-ignore").copied(), Some(true));
-        assert_eq!(
-            matches.get_one::<bool>("no-compression").copied(),
-            Some(true)
-        );
-        assert_eq!(
-            matches.get_one::<bool>("no-encryption").copied(),
-            Some(false)
-        );
-        assert_eq!(matches.get_one::<bool>("dry-run").copied(), Some(false));
-        Ok(())
-    }
-
-    #[test]
-    fn test_arguments_gitignore_and_dry_run() -> Result<()> {
+    fn test_argumets_gitignore_and_dry_run() -> Result<()> {
         let matches = matches_for(&["run", "test", "--gitignore", "--dry-run"])?;
-        assert_eq!(
-            matches.get_one::<String>("name").map(String::as_str),
-            Some("test")
-        );
         assert_eq!(matches.get_one::<bool>("gitignore").copied(), Some(true));
-        assert_eq!(matches.get_one::<bool>("no-ignore").copied(), Some(false));
-        assert_eq!(
-            matches.get_one::<bool>("no-compression").copied(),
-            Some(false)
-        );
-        assert_eq!(
-            matches.get_one::<bool>("no-encryption").copied(),
-            Some(false)
-        );
         assert_eq!(matches.get_one::<bool>("dry-run").copied(), Some(true));
         Ok(())
     }
 
     #[test]
     fn test_arguments_invalid() {
-        let m = command().try_get_matches_from(vec!["run"]);
-        assert!(m.is_err());
+        assert!(command().try_get_matches_from(vec!["run"]).is_err());
     }
 
     #[test]
     fn test_arguments_invalid_name() {
-        let m = command().try_get_matches_from(vec!["run", ""]);
-        assert!(m.is_err());
+        assert!(command().try_get_matches_from(vec!["run", ""]).is_err());
     }
 
     #[test]

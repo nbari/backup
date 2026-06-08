@@ -3,6 +3,7 @@ pub mod new;
 pub mod restore;
 pub mod run;
 pub mod show;
+pub mod verify;
 pub mod view;
 
 use std::path::PathBuf;
@@ -13,6 +14,7 @@ pub enum Action {
         name: String,
         directory: Option<Vec<PathBuf>>,
         file: Option<Vec<PathBuf>>,
+        destination: Vec<String>,
         config: PathBuf,
     },
     Show,
@@ -20,8 +22,6 @@ pub enum Action {
         name: String,
         gitignore: bool,
         no_ignore: bool,
-        no_compression: bool,
-        no_encryption: bool,
         dry_run: bool,
     },
     View {
@@ -34,13 +34,19 @@ pub enum Action {
         name: String,
         add_directories: Vec<PathBuf>,
         add_files: Vec<PathBuf>,
+        add_destinations: Vec<String>,
         remove_directories: Vec<PathBuf>,
         remove_files: Vec<PathBuf>,
+        remove_destinations: Vec<String>,
     },
     Restore {
         name: String,
         target: Option<String>,
         version: Option<i64>,
         into: Option<PathBuf>,
+    },
+    Verify {
+        name: String,
+        repair: bool,
     },
 }

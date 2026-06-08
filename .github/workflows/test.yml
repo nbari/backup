@@ -54,7 +54,6 @@ jobs:
         os:
           - ubuntu-latest
           - macOS-latest
-          - windows-latest
 
     needs:
       - format

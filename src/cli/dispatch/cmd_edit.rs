@@ -22,6 +22,12 @@ pub fn dispatch(matches: &ArgMatches) -> Result<Action> {
             .cloned()
             .collect(),
 
+        add_destinations: matches
+            .get_many::<String>("to")
+            .unwrap_or_default()
+            .cloned()
+            .collect(),
+
         remove_directories: matches
             .get_many::<String>("rm-dir")
             .unwrap_or_default()
@@ -32,6 +38,12 @@ pub fn dispatch(matches: &ArgMatches) -> Result<Action> {
             .get_many::<String>("rm-file")
             .unwrap_or_default()
             .map(PathBuf::from)
+            .collect(),
+
+        remove_destinations: matches
+            .get_many::<String>("rm-to")
+            .unwrap_or_default()
+            .cloned()
             .collect(),
     })
 }

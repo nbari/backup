@@ -396,10 +396,10 @@ the least risk; nothing in a later phase blocks an earlier one.
 - [ ] `run` refactor: metadata-only, stat-based change detection (§6.7)
 - [ ] File metadata capture: mode/uid/gid/mtime, symlinks (not followed), empty
       dirs, special files, hardlinks (§6.8)
-- [ ] Compression: zstd + codec tag (§6.3)
-- [ ] Per-chunk encryption: ChaCha20-Poly1305, tags bound as AAD, HKDF wrap binds
-      ephemeral+recipient pubkeys (§6.3)
-- [ ] Local `Storage` backend (sharded blobs, temp+rename) (§6.5)
+- [x] Compression: zstd + codec tag (§6.3)
+- [x] Per-content encryption: ChaCha20-Poly1305, content id + codec bound as AAD,
+      per-content key wrapped to the public key (whole-file blobs; per-chunk later) (§6.3)
+- [x] Local `Storage` backend (sharded blobs, temp+rename) (§6.5)
 - [ ] `restore` (real): manifest → fetch → decrypt → decompress → verify →
       write + re-apply attributes (§8)
 - [ ] Catalog lock against concurrent `run`/`prune` (§8)
@@ -410,18 +410,20 @@ the least risk; nothing in a later phase blocks an earlier one.
 - [ ] Pack files + index (§6.5)
 
 ### Phase 3 — remote & redundancy
-- [ ] Filesystem backend (path/mount/FUSE: NFS, drives, s3fs, Cryptomator) (§6.5)
+- [x] Filesystem backend (any path/mount/FUSE: NFS, drives, s3fs, Cryptomator) (§6.5)
 - [ ] S3 backend via `s3m` (vendor-agnostic, resumable multipart) (§6.5)
-- [ ] Multi-destination upload + resumable state machine, per-destination sealing (§6.7, #19)
+- [~] Multi-destination upload (filesystem, parallel) done; resumable state machine
+      + per-destination sealing still to do (§6.7, #19)
 - [ ] Streaming + scratch/buffer dir (§6.5, #8)
-- [ ] Destinations config + credential sourcing (§6.7)
+- [~] Destinations config via `-t/--to` done; S3 credential sourcing later (§6.7)
 - [ ] Append-only credential + Object Lock/WORM support (ransomware defense) (§7)
 - [ ] `status` command (§8)
 - [ ] Automatic sealed-catalog upload (incremental, not whole-`.db`) + store layout / DR pull (§7)
 
 ### Phase 4 — integrity & lifecycle
 - [ ] Manifest MAC (naming-key) + local rollback state (§7)
-- [ ] `verify`/`check` (`--deep` / `--repair`) (§8)
+- [x] `verify`/`check` `--repair` — existence check + repair (copy from a healthy
+      destination, else re-seal from source); `--deep` (re-hash blobs) later (§8)
 - [ ] `prune` + GFS retention policy, on a separate delete-capable credential (§8)
 
 ### Phase 5 — nice-to-have / later
@@ -430,7 +432,8 @@ the least risk; nothing in a later phase blocks an earlier one.
 - [ ] Snapshot tags/labels (§9)
 - [ ] Upload throttling / retry-backoff / parallelism; S3 storage classes (§9)
 - [ ] AES-256-GCM cipher option (§6.3)
-- [ ] Fix `-c/--config` (currently ignored by `run`/`view`/`edit`) (§9)
+- [x] Fix `-c/--config` (was ignored by every command except `new`; now resolved
+      once in `start` and threaded through `GlobalArgs`) (§9)
 
 > Note — behavior change in Phase 1: today's `run` hashes file content during the
 > scan. The target (§6.7) makes `run` metadata-only and moves
